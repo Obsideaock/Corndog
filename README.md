@@ -3,10 +3,10 @@
 This is a pet project of mine that has been creating a microbot from mostly scratch.
 He is also featured on season 17 of American Ninja Warrior.
 
-I got the 3D files from KDY0523 (https://www.thingiverse.com/thing:3445283) and a few other places
-Reinforced legs (https://www.thingiverse.com/thing:3445283)
-Unity/ML Agents (My ML agents that trained it to walk: )
-BTULab at CU Boulder
+I got the 3D files from [KDY0523](https://www.thingiverse.com/thing:3445283) and a few other places:
+[Reinforced legs](https://www.thingiverse.com/thing:3445283)
+[My environment of MLagents](https://github.com/Obsideaock/Spot-Micro-Machine-Learning)
+[BTULab at CU Boulder](https://www.colorado.edu/atlas/btu-lab)
 
 Printed my own Prusa i3 MK3S+ with PLA (mostly)
 
