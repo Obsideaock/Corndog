@@ -10,7 +10,7 @@ I got the 3D files from [KDY0523](https://www.thingiverse.com/thing:3445283) and
 
 Printed my own Prusa i3 MK3S+ with PLA (mostly)
 
-##Component List:
+## Component List:
 Rasbian on Raspberry Pi 5  
 (FILLED IN LATER)  
 
