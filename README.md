@@ -6,7 +6,7 @@ He is also featured on season 17 of American Ninja Warrior.
 I got the 3D files from [KDY0523](https://www.thingiverse.com/thing:3445283) and a few other places:  
 [Reinforced legs](https://www.thingiverse.com/thing:3445283)  
 [My environment of MLagents](https://github.com/Obsideaock/Spot-Micro-Machine-Learning)  
-[BTULab at CU Boulder](https://www.colorado.edu/atlas/btu-lab)  
+[BTULab at CU Boulder](https://www.colorado.edu/atlas/btu-lab)(Helped with some printing)  
 
 Printed my own Prusa i3 MK3S+ with PLA (mostly)
 
