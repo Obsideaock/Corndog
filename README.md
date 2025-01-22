@@ -1,5 +1,7 @@
 # Project Corndog
 
+![Corndog is looking presentable and wearing a witch hat for Halloween](/Assets/IMG_4835.jpg)
+
 This is a pet project of mine that has been creating a microbot from mostly scratch.
 He is also featured on season 17 of American Ninja Warrior.
 
