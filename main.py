@@ -127,91 +127,39 @@ def stand_up():
 	set_motor_angles([14, 15, 10, 11], target_positions)
 	initialize_servo_angles()
 
-BODY_LEN = 0.186
-BODY_WID = 0.078
+BODY_LEN = 0.186  # m
+BODY_WID = 0.078  # m
 L1, L2, L3 = 0.055, 0.1075, 0.130
 
-# pick the correct t_* function by leg index:
-LEG_TRANSFORMS = [
-	t_leftfront,   # leg 0
-	t_rightfront,  # leg 1
-	t_leftback,    # leg 2
-	t_rightback    # leg 3
-]
+LEG_TRANSFORMS = {
+	0: t_leftfront,  1: t_rightfront,
+	2: t_leftback,   3: t_rightback,
+}
 
+# 2) your per‐leg sign+offset and channel wiring (fill signs manually)
 MAPPING = {
-	0:{1:{'sign':+1,'offset':130}, 2:{'sign':+1,'offset':-15}, 3:{'sign':+1,'offset': 40}},
-	1:{1:{'sign':-1,'offset':130}, 2:{'sign':-1,'offset':  0}, 3:{'sign':-1,'offset':  0}},
-	2:{1:{'sign':-1,'offset':130}, 2:{'sign':+1,'offset':  0}, 3:{'sign':+1,'offset':180}},
-	3:{1:{'sign':+1,'offset':130}, 2:{'sign':-1,'offset':  0}, 3:{'sign':-1,'offset':  0}},
+	0: {1:{'sign':+1,'offset':130-273}, 2:{'sign':+1,'offset':  275}, 3:{'sign':+1,'offset': -85}},
+	1: {1:{'sign':-1,'offset':130}, 2:{'sign':-1,'offset':  45}, 3:{'sign':-1,'offset': 240}},
+	2: {1:{'sign':-1,'offset':130}, 2:{'sign':+1,'offset':  70}, 3:{'sign':+1,'offset':  40}},
+	3: {1:{'sign':+1,'offset':130}, 2:{'sign':-1,'offset':  20}, 3:{'sign':-1,'offset': 240}},
 }
 
-def to_user_angles(leg_idx, thetas):
-	out = []
-	for j in (1, 2, 3):
-		deg = math.degrees(thetas[j-1])
-		cfg = MAPPING[leg_idx][j]
-		out.append(cfg['sign'] * deg + cfg['offset'])
-	return tuple(out)
-	
-SERVO_MAP = {
-	(0, 1): 0,  (0, 2): 1,  (0, 3): 4,
-	(1, 1): 5,  (1, 2): 6,  (1, 3): 7,
-	(2, 1): 8,  (2, 2): 9,  (2, 3): 10,
-	(3, 1): 11, (3, 2): 14, (3, 3): 15,
+CHANNEL_MAP = {
+	0:{1:9,  2:11, 3:15},
+	1:{1:8,  2:10, 3:14},
+	2:{1:6,  2:4,  3:0 },
+	3:{1:7,  2:5,  3:1 },
 }
 
-def full_ik_move(x, y, z, safety=False, steps=10):
-	"""
-	Move body from (0,0,0) ? (x,y,z) in straight line (m).
-	  x: +forward, y: +right, z: +up
-	safety: if True, just print angles; else actuate.
-	"""
-	start = np.array([0.0, 0.0, 0.0])
-	target = np.array([x, y, z])
-	for i, t in enumerate(np.linspace(0, 1, steps)):
-		pos = (1 - t) * start + t * target
-		sm = SpotMicroStickFigure(x=pos[0], y=pos[1], z=pos[2], phi=0, theta=0, psi=0)
-		all_thetas = sm.get_leg_angles()
-		commands = {}
-		for leg_idx, thetas in enumerate(all_thetas):
-			uangs = to_user_angles(leg_idx, thetas)
-			for joint_idx, ua in enumerate(uangs, start=1):
-				ch = SERVO_MAP[(leg_idx, joint_idx)]
-				commands[ch] = ua - servo_angles[ch]
-		if safety:
-			print(f"Step {i+1}/{steps}, body?{tuple(pos)}: {commands}")
-		else:
-			move_motors(commands)
-			
-def single_leg_ik_hip_frame(leg_idx, x_hip, y_hip, z_hip):
-	"""
-	Returns (q1,q2,q3) in radians for one leg,
-	given a target (x_hip,y_hip,z_hip) in that leg?s HIP frame.
-	"""
-	# build a ?body at origin, no rotation? transform
-	ht_body = homog_transxyz(0,0,0) @ homog_rotxyz(0,0,0)
-	# get that leg?s body?hip transform
-	t_leg = LEG_TRANSFORMS[leg_idx](ht_body, BODY_LEN, BODY_WID)
+INV_LEG = {}
+ht_body0 = homog_transxyz(0,0,0) @ homog_rotxyz(0,0,0)
+for leg_idx, tf_fn in LEG_TRANSFORMS.items():
+	# T_body→hip
+	T = tf_fn(ht_body0, BODY_LEN, BODY_WID)
+	INV_LEG[leg_idx] = np.linalg.inv(T)
 
-	# map your hip-frame point into the leg?s local coords
-	p_body    = t_leg @ np.array([x_hip, y_hip, z_hip, 1.0])
-	p_local   = np.linalg.inv(t_leg) @ p_body
+# reuse your existing move_motors() and servo_angles dict here…
 
-	# call the low-level IK (front?legs use legs12=True)
-	front_leg = (leg_idx in (0,1))
-	return ikine(p_local[0], p_local[1], p_local[2],
-				 L1, L2, L3, legs12=front_leg)
-
-
-# --- your mapping & converter from raw radians ? servo degrees ---
-# (include your adjusted offsets & signs here)
-MAPPING = {
-	0: {1:{'sign':+1,'offset':130}, 2:{'sign':+1,'offset': -15}, 3:{'sign':+1,'offset':  40}},
-	1: {1:{'sign':-1,'offset':130}, 2:{'sign':-1,'offset':   0}, 3:{'sign':-1,'offset': 240}},  # example
-	2: {1:{'sign':-1,'offset':130}, 2:{'sign':+1,'offset':   0}, 3:{'sign':+1,'offset':  40}},
-	3: {1:{'sign':+1,'offset':130}, 2:{'sign':-1,'offset':   0}, 3:{'sign':-1,'offset': 240}},
-}
 def to_user_angles(leg_idx, theta_rads):
 	cfg = MAPPING[leg_idx]
 	return tuple(
@@ -219,54 +167,41 @@ def to_user_angles(leg_idx, theta_rads):
 		for j in (1,2,3)
 	)
 
-# 4) Map (leg, joint) ? your PCA9685 channel numbers
-#    Fill these in to match your wiring!
-CHANNEL_MAP = {
-	0: {  # front-left
-		1:  9,  # hip
-		2: 11,  # thigh
-		3: 15,  # ankle
-	},
-	1: {  # front-right
-		1:  8,  # hip
-		2: 10,  # thigh
-		3: 14,  # ankle
-	},
-	2: {  # back-left
-		1:  6,  # hip
-		2:  4,  # thigh
-		3:  0,  # ankle
-	},
-	3: {  # back-right
-		1:  7,  # hip
-		2:  5,  # thigh
-		3:  1,  # ankle
-	},
-}
-
-def move_single_leg(leg_idx, x, y, z, safety=False, speed=10):
+def move_single_leg_body_frame(leg_idx, x_body, y_body, z_body, safety=False, speed=10):
 	"""
-	Move *one* leg in its own hip?frame to (x,y,z) [m].
-	If safety=True, just prints the channel?delta map.
+	Move ONE leg to (x_body, y_body, z_body) in the BODY frame.
+	Internally transforms into hip frame, does IK, then calls move_motors.
 	"""
-	# 1) compute raw IK
-	q1, q2, q3 = single_leg_ik_hip_frame(leg_idx, x, y, z)
-
-	# 2) convert to your servo?degrees
+	# A) Build the homogeneous body-frame point
+	P_body = np.array([x_body, y_body, z_body, 1.0])
+		
+	# B) Transform into hip frame via precomputed inverse
+	P_hip = INV_LEG[leg_idx] @ P_body
+	x_h, y_h, z_h = P_hip[:3]
+	
+	# C) IK in hip frame
+	front = (leg_idx in (0,1))
+	q1, q2, q3 = ikine(x_h, y_h, z_h, L1, L2, L3, legs12=front)
+	
+	# D) Convert to user‐space servo angles
 	user_deg = to_user_angles(leg_idx, (q1, q2, q3))
-
-	# 3) build channel:delta_angle map
+	
+	# E) Build the channel→delta map
 	movements = {}
-	for joint, target in enumerate(user_deg, start=1):
+	for joint, tgt in enumerate(user_deg, start=1):
 		ch = CHANNEL_MAP[leg_idx][joint]
-		delta = target - servo_angles[ch]
-		movements[ch] = delta
-
-	# 4) either print or move
+		movements[ch] = tgt - servo_angles[ch]
+	
+	# F) Either print (safety) or actually move
 	if safety:
-		print(f"Leg {leg_idx} ? move: {movements}")
+		print(f"Leg {leg_idx} planned deltas: {movements}")
 	else:
 		move_motors(movements, speed_multiplier=speed)
+
+# ————————————————————————————————————————————————
+# 2) Calibration helper for your MAPPING offsets
+#     Run this once with your known “home” body pose so that
+#     raw IK → desired servo_home values line up exactly.
 
 def enable_servos():
 	output_enable.off()
@@ -612,9 +547,16 @@ def create_gui():
 		lcd.clear()
 
 	def IKTEST():
-		move_single_leg(0, 0.0, +0.055, -0.16, safety=True)
-		time.sleep(1)
-		move_single_leg(0, 0.04, +0.055, -0.16, safety=True)
+		initialize_servo_angles()
+		while True:
+			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.154, safety=False)
+			time.sleep(0.5)
+			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.174, safety=False)
+			time.sleep(0.5)
+			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.174, safety=False)
+			time.sleep(0.5)
+			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.154, safety=False)
+			time.sleep(0.5)
 
 	def power_off():
 		lcd.lcd("Down")
@@ -623,6 +565,7 @@ def create_gui():
 		lcd.clear()
 
 	tk.Button(window, text="Stand Up", command=stand_up).pack()
+	tk.Button(window, text="IK Test", command=IKTEST).pack()
 
 	# Create the walk button with an initial label
 	walk_button = tk.Button(window, text="Start Walking", command=walk)
