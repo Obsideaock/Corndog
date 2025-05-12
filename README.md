@@ -38,11 +38,11 @@ Project Corndog is an open-source quadruped microbot built around a Raspberry Pi
 | Adafruit PCA9685 16-Channel PWM Driver   | [Amazon](https://a.co/d/57Q8URR), [Adafruit](https://www.adafruit.com/product/815)                                    | I²C address 0x40                                              |
 | Servo Motors (×12)                       | [Amazon](https://a.co/d/4C4s5K8)                                                | 0–270° actuation range, pulse 500–2500 µs                    |
 | Lithium-Polymer Battery + Power Module   | [Amazon](https://a.co/d/3LN6lL5)                                                | Custom solution coming soon                                 |
-| Wires, Breadboard, GPIO Headers, etc.    | No Specifcs needed/used                                 | jumper wires, heat-shrink tubing, nylon standoffs, etc.      |
+| Wires, Breadboard, GPIO Headers, etc.    | No specifics needed/used                                 | jumper wires, heat-shrink tubing, nylon standoffs, etc.      |
 
 ## 3D-Printed Parts
 Most structural parts come from KDY0523’s [Thingiverse design](https://www.thingiverse.com/thing:3445283).  
-- **Custom harness** (for travel)—photo's and linkkkkkkkkkkkkkkkkkkks coming soon.  
+- **Custom harness** (for travel)—photo's and links coming soon.  
 - **Reinforced legs** from [Mike4192’s SpotMicro fork](https://github.com/mike4192/spotMicro).  
 - **BTULab at CU Boulder** assisted with experimental printing. (My school!)
 
