@@ -58,7 +58,7 @@ pip3 install adafruit-circuitpython-pca9685 adafruit-circuitpython-servokit \
   gpiozero numpy opencv-python picamera2
 ```
 
-- **spot-micro-kinematics**: for IK & stick-figure utilities   (Manually install from [here](https://github.com/mike4192/spot_micro_kinematics_python/tree/master) 
+- **spot-micro-kinematics**: for IK & stick-figure utilities   (Manually install from [here](https://github.com/mike4192/spot_micro_kinematics_python/tree/master)) 
 - **tkinter**: GUI controls  
 - **MoveLib**: alias for `main.py` routines in `SteamDeckCommunication.py`  (Found in this repo)
 - **nmcli**: used by `DisplayWifi.py` to show WiFi status on LCD  
