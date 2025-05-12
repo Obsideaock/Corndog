@@ -83,9 +83,9 @@ pip install -r requirements.txt
 - Place robot upside down and manually adjust each joint to find standing position where all of the joints are the same distance from the ground. Place updated angles into servo_home.
 - Note channel ↔ joint mapping in `main.py`’s `MAPPING` & `CHANNEL_MAP`.  
 - Edit offsets in `MAPPING` until the “home” pose matches your physical mech. Put safety=true, take the printed values for each motor and add the inverse (example below)
-> Given from safety: Leg 3 planned deltas: ```{7: 10.3512659818415784, 5: -6.30598966999280464, 1: -30.17742776376383063}```\
+> Given from safety: ```Leg 3 planned deltas: {7: 10.3512659818415784, 5: -6.30598966999280464, 1: -30.17742776376383063}```\
 > Beforehand: ```3: {1:{'sign':+1,'offset':45}, 2:{'sign':-1,'offset':  83}, 3:{'sign':-1,'offset': 131}}```\
-> Post editing offsets: ```3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':  86}, 3:{'sign':-1,'offset': 161}}```
+> Post editing offsets: ```3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':  89}, 3:{'sign':-1,'offset': 161}}```
 
 4. **Auto-start WiFi display** (optional)  
 - Add `DisplayWifi.py` to `/etc/rc.local` or create a systemd service to run on boot.
