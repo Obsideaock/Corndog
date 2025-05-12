@@ -29,7 +29,7 @@ output_enable = OutputDevice(OE_PIN, active_high=False)
 
 # Define the servo channels and positions
 servo_channels = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
-servo_home = {0: 40, 1: 230, 4: 225, 5: 45, 6: 130, 7: 130, 8: 130, 9:135, 10: 70, 11: 200, 14: 235, 15: 40}
+servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9:135, 10: 73, 11: 194, 14: 240, 15: 37}
 TURN_SCALE = 0.2
 LEFT_CHANNELS  = {15, 11,  0,  4}  # FL ankle, FL thigh, BL ankle, BL thigh
 RIGHT_CHANNELS = {14, 10,  1,  5}  # FR ankle, FR thigh, BR ankle, BR thigh
@@ -138,10 +138,10 @@ LEG_TRANSFORMS = {
 
 # 2) your per‐leg sign+offset and channel wiring (fill signs manually)
 MAPPING = {
-	0: {1:{'sign':+1,'offset':130-273}, 2:{'sign':+1,'offset':  275}, 3:{'sign':+1,'offset': -85}},
-	1: {1:{'sign':-1,'offset':130}, 2:{'sign':-1,'offset':  45}, 3:{'sign':-1,'offset': 240}},
-	2: {1:{'sign':-1,'offset':130}, 2:{'sign':+1,'offset':  70}, 3:{'sign':+1,'offset':  40}},
-	3: {1:{'sign':+1,'offset':130}, 2:{'sign':-1,'offset':  20}, 3:{'sign':-1,'offset': 240}},
+	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  268}, 3:{'sign':+1,'offset': -85}},
+	1: {1:{'sign':-1,'offset':225}, 2:{'sign':-1,'offset':  28}, 3:{'sign':-1,'offset': 310}},
+	2: {1:{'sign':-1,'offset':408}, 2:{'sign':+1,'offset':  151}, 3:{'sign':+1,'offset':  167}},
+	3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':  87}, 3:{'sign':-1,'offset': 155}},
 }
 
 CHANNEL_MAP = {
@@ -549,13 +549,13 @@ def create_gui():
 	def IKTEST():
 		initialize_servo_angles()
 		while True:
-			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.154, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.157, safety=False)
 			time.sleep(0.5)
-			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.174, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.157-0.03, safety=False)
 			time.sleep(0.5)
-			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.174, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157-0.03, safety=False)
 			time.sleep(0.5)
-			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.154, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157, safety=False)
 			time.sleep(0.5)
 
 	def power_off():

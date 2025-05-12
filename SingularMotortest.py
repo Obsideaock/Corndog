@@ -11,7 +11,7 @@ pca = PCA9685(i2c)
 pca.frequency = 50
 
 # Initialize servo motor on channel 7
-servo_channel = 10
+servo_channel = 14
 enable_device = OutputDevice(17)
 my_servo = servo.Servo(pca.channels[servo_channel])
 my_servo.set_pulse_width_range(500, 2500)
