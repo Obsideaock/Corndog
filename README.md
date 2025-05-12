@@ -22,7 +22,7 @@
 ---
 
 ## Overview
-Project Corndog is an open-source quadruped microbot built around a Raspberry Pi 5 and Adafruit PCA9685 servo drivers. Originally conceived as a ground-based “drone” alternative for graduation, it’s grown into both a hobbyist platform and research testbed for inverse kinematics and machine learning.
+Project Corndog is an open-source quadruped microbot built around a Raspberry Pi 5 and Adafruit PCA9685 servo drivers. Originally conceived as a ground-based “drone” alternative, it’s grown into both a hobbyist platform and research testbed for sensors/coding and machine learning.
 
 ![Corndog in Halloween witch hat](/Assets/IMG_4835.jpg)
 
@@ -34,21 +34,19 @@ Project Corndog is an open-source quadruped microbot built around a Raspberry Pi
 ## Hardware Requirements
 | Component                                | Link (example)                                          | Notes                                                         |
 |------------------------------------------|---------------------------------------------------------|---------------------------------------------------------------|
-| Raspberry Pi 5                            | https://www.amazon.com/dp/B0XXXXXXX                     | Raspbian (64-bit) flashed                                    |
-| Adafruit PCA9685 16-Channel PWM Driver   | https://www.adafruit.com/product/815                    | I²C address 0x40                                              |
-| Servo Motors (×12)                       | https://www.amazon.com/dp/B07XXXXXXX                     | 0–270° actuation range, pulse 500–2500 µs                     |
-| Lithium-Polymer Battery + Power Module   | https://www.adafruit.com/product/XXX                    | Custom circuit board planned—stock LiPo + UBEC for now       |
-| Wires, Breadboard, GPIO Headers, etc.    | –                                                       | jumper wires, heat-shrink tubing, nylon standoffs, etc.      |
-
-> **Tip:** Replace example links above with your preferred retailer (Amazon, Adafruit, etc.).
+| Raspberry Pi 5                           | [Amazon](https://a.co/d/dEzpuJt)                                                | Raspbian (64-bit) flashed                                    |
+| Adafruit PCA9685 16-Channel PWM Driver   | [Amazon](https://a.co/d/57Q8URR), [Adafruit](https://www.adafruit.com/product/815)                                    | I²C address 0x40                                              |
+| Servo Motors (×12)                       | [Amazon](https://a.co/d/4C4s5K8)                                                | 0–270° actuation range, pulse 500–2500 µs                    |
+| Lithium-Polymer Battery + Power Module   | [Amazon](https://a.co/d/3LN6lL5)                                                | Custom solution coming soon                                 |
+| Wires, Breadboard, GPIO Headers, etc.    | No Specifcs needed/used                                 | jumper wires, heat-shrink tubing, nylon standoffs, etc.      |
 
 ## 3D-Printed Parts
 Most structural parts come from KDY0523’s [Thingiverse design](https://www.thingiverse.com/thing:3445283).  
-- **Custom harness** (for travel)—photo coming soon.  
+- **Custom harness** (for travel)—photo's and linkkkkkkkkkkkkkkkkkkks coming soon.  
 - **Reinforced legs** from [Mike4192’s SpotMicro fork](https://github.com/mike4192/spotMicro).  
-- **BTULab at CU Boulder** assisted with high-precision printing.
+- **BTULab at CU Boulder** assisted with experimental printing. (My school!)
 
-_Place your STL names & print settings here (layer height, infill, material)._
+Currently used PLA for all parts. Experimented with ASA for the joints for increased strength, but still snapped under extreme circumstances and pla is way easier to use so I swapped back.
 
 ## Software Dependencies
 All code targets **Python 3.8+** on Raspbian. You’ll need:
@@ -57,15 +55,13 @@ All code targets **Python 3.8+** on Raspbian. You’ll need:
 sudo apt update && sudo apt install -y python3-pip python3-venv python3-tk \
   libopencv-dev network-manager
 pip3 install adafruit-circuitpython-pca9685 adafruit-circuitpython-servokit \
-  gpiozero numpy spot-micro-kinematics opencv-python picamera2
+  gpiozero numpy opencv-python picamera2
 ```
 
-- **spot-micro-kinematics**: for IK & stick-figure utilities  
+- **spot-micro-kinematics**: for IK & stick-figure utilities   (Manually install from [here](https://github.com/mike4192/spot_micro_kinematics_python/tree/master) 
 - **tkinter**: GUI controls  
-- **MoveLib**: alias for `main.py` routines in `SteamDeckCommunication.py`  
+- **MoveLib**: alias for `main.py` routines in `SteamDeckCommunication.py`  (Found in this repo)
 - **nmcli**: used by `DisplayWifi.py` to show WiFi status on LCD  
-
-_Add any extras here as you integrate ML-Agents or other modules._
 
 ## Installation & Setup
 
@@ -83,26 +79,25 @@ pip install -r requirements.txt
 ```
 
 3. **Servo calibration**  
-- Run `SingularMotortest.py` to manually find 0°–270° endpoints.  
+- Run `SingularMotortest.py` to manually find 0°–270° endpoints.
+- Place robot upside down and manually adjust each joint to find standing position where all of the joints are the same distance from the ground. Place updated angles into servo_home.
 - Note channel ↔ joint mapping in `main.py`’s `MAPPING` & `CHANNEL_MAP`.  
-- Edit offsets in `MAPPING` until the “home” pose matches your physical mech.
+- Edit offsets in `MAPPING` until the “home” pose matches your physical mech. Put safety=true, take the printed values for each motor and add the inverse:
+> Given from safety: Leg 3 planned deltas: ```{7: 10.3512659818415784, 5: -6.30598966999280464, 1: -30.17742776376383063}```
+> Beforehand: ```3: {1:{'sign':+1,'offset':45}, 2:{'sign':-1,'offset':  83}, 3:{'sign':-1,'offset': 131}}```
+> Post editing offsets: ```3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':  86}, 3:{'sign':-1,'offset': 161}}```
 
 4. **Auto-start WiFi display** (optional)  
 - Add `DisplayWifi.py` to `/etc/rc.local` or create a systemd service to run on boot.
 
-5. **Configure motor offsets & directions**  
-- Use the **Singular Motor Test** and a protractor to record joint limits.  
-- Back-calculate the offsets in `main.py` by moving to a known pose.
 
-6. **(WIP) Power-supply upgrade**  
-- Replace stock UBEC + LiPo with custom PCB—details coming soon.
-
-## Usage
+## Usage after setup
 
 1. **Enable servos** and initialize:  
 ```bash
 python3 SteamDeckCommunication.py
 ```
+> Steamdeck script coming soon
 
 - Streams MJPEG video at `http://<pi-ip>:8000/stream.mjpg`  
 - Listens for joystick/control commands on TCP port 65432
@@ -127,7 +122,7 @@ The `Spot-Micro-Machine-Learning` folder contains an ML-Agents environment for g
 
 ## American Ninja Warrior Feature
 
-Corndog (as “Spot Micro”) appears in **American Ninja Warrior S17**—episode & air date TBD.  
+Corndog (as “Spot Micro”) appears in **American Ninja Warrior S17**—episode & air date TBD. Once the episodes/season have come out, limited links will be availabe.
 > **Media:** links to video clips and press coverage will be added once available.
 
 ## Contribution & License
@@ -139,8 +134,8 @@ Corndog (as “Spot Micro”) appears in **American Ninja Warrior S17**—episod
 ## Roadmap
 
 - 🔧 Improved IK calibration tool (in progress)  
-- 🔋 Custom power-board integration  
-- 🦾 Advanced gaits via ML-Agents (shared models)  
+- 🔋 Custom power-board integration  (in progress)
+- 🦾 Advanced gaits via ML-Agents (shared models) (Feel free to offer help)
 - 🖥️ Web dashboard for remote control & monitoring  
 - 📷 ANW media gallery (post-season)
 
@@ -148,7 +143,7 @@ Corndog (as “Spot Micro”) appears in **American Ninja Warrior S17**—episod
 
 - **KDY0523** for the original 3D design ([Thingiverse](https://www.thingiverse.com/thing:3445283))  
 - **Mike4192** for reinforced leg mods ([GitHub](https://github.com/mike4192/spotMicro))  
-- **BTULab @ CU Boulder** for printing assistance  
+- **BTULab @ CU Boulder** for printing assistance ([BTULab](https://www.colorado.edu/atlas/btu-lab))
 - **All contributors** and the open-source robotics community  
 
 ---

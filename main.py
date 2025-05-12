@@ -138,10 +138,10 @@ LEG_TRANSFORMS = {
 
 # 2) your per‐leg sign+offset and channel wiring (fill signs manually)
 MAPPING = {
-	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  268}, 3:{'sign':+1,'offset': -85}},
-	1: {1:{'sign':-1,'offset':225}, 2:{'sign':-1,'offset':  28}, 3:{'sign':-1,'offset': 310}},
-	2: {1:{'sign':-1,'offset':408}, 2:{'sign':+1,'offset':  151}, 3:{'sign':+1,'offset':  167}},
-	3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':  87}, 3:{'sign':-1,'offset': 155}},
+	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  266}, 3:{'sign':+1,'offset': -86}},
+	1: {1:{'sign':-1,'offset':228}, 2:{'sign':-1,'offset':  34}, 3:{'sign':-1,'offset': 310}},
+	2: {1:{'sign':-1,'offset':406}, 2:{'sign':+1,'offset':  150}, 3:{'sign':+1,'offset':  162}},
+	3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':  89}, 3:{'sign':-1,'offset': 161}},
 }
 
 CHANNEL_MAP = {
@@ -548,15 +548,15 @@ def create_gui():
 
 	def IKTEST():
 		initialize_servo_angles()
-		while True:
-			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.157, safety=False)
-			time.sleep(0.5)
-			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.157-0.03, safety=False)
-			time.sleep(0.5)
-			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157-0.03, safety=False)
-			time.sleep(0.5)
-			move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157, safety=False)
-			time.sleep(0.5)
+		#while True:
+		move_single_leg_body_frame(3, -BODY_LEN/2, -BODY_WID/2, -0.16, safety=True)
+			#time.sleep(0.5)
+			#move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.157-0.03, safety=False)
+			#time.sleep(0.5)
+			#move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157-0.03, safety=False)
+			#time.sleep(0.5)
+			#move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157, safety=False)
+			#time.sleep(0.5)
 
 	def power_off():
 		lcd.lcd("Down")
