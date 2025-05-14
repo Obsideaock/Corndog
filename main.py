@@ -197,6 +197,86 @@ def move_single_leg_body_frame(leg_idx, x_body, y_body, z_body, safety=False, sp
 		print(f"Leg {leg_idx} planned deltas: {movements}")
 	else:
 		move_motors(movements, speed_multiplier=speed)
+		
+def iklegs_move(leg_offsets, step_multiplier=10, speed=10, delay=0.01):
+    """
+    Move multiple legs together along straight‐line paths in body‐space.
+    
+    leg_offsets: dict mapping leg_idx → (dx_u, dy_u, dz_u)
+      where (0,0,0) means “home” and units are the same as your IKTEST.
+    step_multiplier: how many interpolation steps per unit of offset
+    speed: higher → fewer total steps
+    delay: pause between each micro‐step (s)
+    """
+    # your per‐leg home + scale from IKTEST
+    leg_cfg = {
+        0: {'base': ( BODY_LEN/2,  BODY_WID/2,  -0.16),
+            'scale': ( 3/3.5,       3/3.5,     3/2.5 )},
+        1: {'base': ( BODY_LEN/2, -BODY_WID/2, -0.16),
+            'scale': (-3/3.5,       3/2,       3/3.75)},
+        2: {'base': (-BODY_LEN/2,  BODY_WID/2,  -0.16),
+            'scale': ( 3/2.5,       3/3.5,     3/2.5 )},
+        3: {'base': (-BODY_LEN/2, -BODY_WID/2,  -0.16),
+            'scale': (-3/2.5,       3/2,       3/3.75)},
+    }
+
+    def clamp(a):  
+        return max(0, min(270, a))
+
+    # 1) figure out how many micro‐steps
+    max_steps = 0
+    for dx, dy, dz in leg_offsets.values():
+        max_steps = max(max_steps,
+                        abs(dx)*step_multiplier,
+                        abs(dy)*step_multiplier,
+                        abs(dz)*step_multiplier)
+    steps = max(1, int(round(max_steps/speed)))
+
+    # 2) per‐leg per‐step increments in user‐space
+    incs = {
+        leg: (dx/steps, dy/steps, dz/steps)
+        for leg, (dx, dy, dz) in leg_offsets.items()
+    }
+
+    # 3) loop through each micro‐step
+    for s in range(1, steps+1):
+        # build a combined delta‐map for all servos this step
+        step_movements = {}
+
+        for leg_idx, (inc_x, inc_y, inc_z) in incs.items():
+            # current offset in user‐space
+            ux = inc_x * s
+            uy = inc_y * s
+            uz = inc_z * s
+
+            cfg = leg_cfg[leg_idx]
+            # map into body coords
+            xb = cfg['base'][0] + ux * cfg['scale'][0]
+            yb = cfg['base'][1] + uy * cfg['scale'][1]
+            zb = cfg['base'][2] + uz * cfg['scale'][2]
+
+            # transform → hip, solve IK
+            P_body = np.array([xb, yb, zb, 1.0])
+            P_hip  = INV_LEG[leg_idx] @ P_body
+            front = (not (leg_idx in (0,1))) ^ (leg_idx in (2,3))
+            q1, q2, q3 = ikine(P_hip[0], P_hip[1], P_hip[2],
+                               L1, L2, L3, legs12=front)
+
+            # convert to servo angles
+            user_deg = to_user_angles(leg_idx, (q1, q2, q3))
+
+            # assemble this leg’s channel→delta
+            for joint, tgt in enumerate(user_deg, start=1):
+                ch = CHANNEL_MAP[leg_idx][joint]
+                step_movements[ch] = tgt - servo_angles[ch]
+
+        # 4) apply all those little deltas in one go
+        for ch, delta in step_movements.items():
+            new = clamp(servo_angles[ch] + delta)
+            servos[ch].angle     = new
+            servo_angles[ch]      = new
+
+        time.sleep(delay)
 
 
 def enable_servos():
@@ -543,45 +623,17 @@ def create_gui():
 		lcd.clear()
 
 	def IKTEST():
-		
-		move_single_leg_body_frame(0, BODY_LEN/2, (BODY_WID/2), -0.16, safety=True)
-		move_single_leg_body_frame(1, BODY_LEN/2, -(BODY_WID/2), -0.16, safety=True)
-		move_single_leg_body_frame(2, -BODY_LEN/2, (BODY_WID/2), -0.16, safety=True)
-		move_single_leg_body_frame(3, -BODY_LEN/2, -(BODY_WID/2), -0.16, safety=True)
-		
-		# 0 conversion: x = *3/3.5 y = *3/3.5, z = *3/2.5
-		# 1 conversion: x = *3/3.5 y = *1, z = *3/3.75
-		# 2 conversion: x = *3/2.5 y = *3/3.5, z = *3/2.5
-		# 3 conversion: x = *3/2.5, y = *1, z = *3/3.75
-		
+		n=0.1
 		while True:
-			"""
-			move_single_leg_body_frame(2, -BODY_LEN/2, BODY_WID/2, -0.16, safety=False)
-			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.16, safety=False)
-			time.sleep(1)
-			move_single_leg_body_frame(2, -BODY_LEN/2, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
-			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
-			time.sleep(1)
-			move_single_leg_body_frame(2, -BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
-			move_single_leg_body_frame(0, BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
-			time.sleep(1)
-			move_single_leg_body_frame(2, -BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2, -0.16, safety=False)
-			move_single_leg_body_frame(0, BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2, -0.16, safety=False)
-			time.sleep(1)
-			"""
-			move_single_leg_body_frame(1, BODY_LEN/2, -BODY_WID/2, -0.16, safety=False)
-			move_single_leg_body_frame(3, -BODY_LEN/2, -BODY_WID/2, -0.16, safety=False)
-			time.sleep(1)
-			move_single_leg_body_frame(1, BODY_LEN/2, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
-			move_single_leg_body_frame(3, -BODY_LEN/2, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
-			time.sleep(1)
-			move_single_leg_body_frame(1, BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
-			move_single_leg_body_frame(3, -BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
-			time.sleep(1)
-			move_single_leg_body_frame(1, BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2, -0.16, safety=False)
-			move_single_leg_body_frame(3, -BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2, -0.16, safety=False)
-			time.sleep(1)
-
+			iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)}, delay=0.1)
+			time.sleep(n)
+			iklegs_move({0:(0,0,0.03), 1:(0,0,0.03), 2:(0,0,0.03), 3:(0,0,0.03)}, delay=0.1)
+			time.sleep(n)
+			iklegs_move({0:(0.03,0,0.03), 1:(0.03,0,0.03), 2:(0.03,0,0.03), 3:(0.03,0,0.03)}, delay=0.1)
+			time.sleep(n)
+			iklegs_move({0:(0.03,0,0), 1:(0.03,0,0), 2:(0.03,0,0), 3:(0.03,0,0)}, delay=0.1)
+			time.sleep(n)
+			
 			
 	def power_off():
 		lcd.lcd("Down")
