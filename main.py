@@ -11,7 +11,7 @@ import math
 import numpy as np
 from spot_micro_kinematics.spot_micro_stick_figure import SpotMicroStickFigure
 # import the low-level utilities:
-from spot_micro_kinematics.utilities.transformations import homog_transxyz, homog_rotxyz
+from spot_micro_kinematics.utilities.transformations import homog_transxyz, homog_rotxyz, ht_inverse
 from spot_micro_kinematics.utilities.spot_micro_kinematics import (
 	t_rightback, t_rightfront, t_leftfront, t_leftback, ikine
 )
@@ -138,8 +138,8 @@ LEG_TRANSFORMS = {
 
 # 2) your per‐leg sign+offset and channel wiring (fill signs manually)
 MAPPING = {
-	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  266}, 3:{'sign':+1,'offset': -86}},
-	1: {1:{'sign':-1,'offset':228}, 2:{'sign':-1,'offset':  34}, 3:{'sign':-1,'offset': 310}},
+	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  122}, 3:{'sign':+1,'offset': -86+246}},
+	1: {1:{'sign':-1,'offset':228}, 2:{'sign':-1,'offset':  34+78}, 3:{'sign':-1,'offset': 310-140}},
 	2: {1:{'sign':-1,'offset':406}, 2:{'sign':+1,'offset':  150}, 3:{'sign':+1,'offset':  162}},
 	3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':  89}, 3:{'sign':-1,'offset': 161}},
 }
@@ -156,7 +156,7 @@ ht_body0 = homog_transxyz(0,0,0) @ homog_rotxyz(0,0,0)
 for leg_idx, tf_fn in LEG_TRANSFORMS.items():
 	# T_body→hip
 	T = tf_fn(ht_body0, BODY_LEN, BODY_WID)
-	INV_LEG[leg_idx] = np.linalg.inv(T)
+	INV_LEG[leg_idx] = ht_inverse(T)
 
 # reuse your existing move_motors() and servo_angles dict here…
 
@@ -180,7 +180,7 @@ def move_single_leg_body_frame(leg_idx, x_body, y_body, z_body, safety=False, sp
 	x_h, y_h, z_h = P_hip[:3]
 	
 	# C) IK in hip frame
-	front = (leg_idx in (0,1))
+	front = (not (leg_idx in (0,1))) ^ (leg_idx in (2,3))
 	q1, q2, q3 = ikine(x_h, y_h, z_h, L1, L2, L3, legs12=front)
 	
 	# D) Convert to user‐space servo angles
@@ -198,10 +198,6 @@ def move_single_leg_body_frame(leg_idx, x_body, y_body, z_body, safety=False, sp
 	else:
 		move_motors(movements, speed_multiplier=speed)
 
-# ————————————————————————————————————————————————
-# 2) Calibration helper for your MAPPING offsets
-#     Run this once with your known “home” body pose so that
-#     raw IK → desired servo_home values line up exactly.
 
 def enable_servos():
 	output_enable.off()
@@ -547,17 +543,46 @@ def create_gui():
 		lcd.clear()
 
 	def IKTEST():
-		initialize_servo_angles()
-		#while True:
-		move_single_leg_body_frame(3, -BODY_LEN/2, -BODY_WID/2, -0.16, safety=True)
-			#time.sleep(0.5)
-			#move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.157-0.03, safety=False)
-			#time.sleep(0.5)
-			#move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157-0.03, safety=False)
-			#time.sleep(0.5)
-			#move_single_leg_body_frame(0, BODY_LEN/2+0.05, BODY_WID/2, -0.157, safety=False)
-			#time.sleep(0.5)
+		
+		move_single_leg_body_frame(0, BODY_LEN/2, (BODY_WID/2), -0.16, safety=True)
+		move_single_leg_body_frame(1, BODY_LEN/2, -(BODY_WID/2), -0.16, safety=True)
+		move_single_leg_body_frame(2, -BODY_LEN/2, (BODY_WID/2), -0.16, safety=True)
+		move_single_leg_body_frame(3, -BODY_LEN/2, -(BODY_WID/2), -0.16, safety=True)
+		
+		# 0 conversion: x = *3/3.5 y = *3/3.5, z = *3/2.5
+		# 1 conversion: x = *3/3.5 y = *1, z = *3/3.75
+		# 2 conversion: x = *3/2.5 y = *3/3.5, z = *3/2.5
+		# 3 conversion: x = *3/2.5, y = *1, z = *3/3.75
+		
+		while True:
+			"""
+			move_single_leg_body_frame(2, -BODY_LEN/2, BODY_WID/2, -0.16, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2, -0.16, safety=False)
+			time.sleep(1)
+			move_single_leg_body_frame(2, -BODY_LEN/2, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
+			time.sleep(1)
+			move_single_leg_body_frame(2, -BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2-(0.03)*3/3.5, -0.16, safety=False)
+			time.sleep(1)
+			move_single_leg_body_frame(2, -BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2, -0.16, safety=False)
+			move_single_leg_body_frame(0, BODY_LEN/2+(0.03)*3/3.5, BODY_WID/2, -0.16, safety=False)
+			time.sleep(1)
+			"""
+			move_single_leg_body_frame(1, BODY_LEN/2, -BODY_WID/2, -0.16, safety=False)
+			move_single_leg_body_frame(3, -BODY_LEN/2, -BODY_WID/2, -0.16, safety=False)
+			time.sleep(1)
+			move_single_leg_body_frame(1, BODY_LEN/2, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
+			move_single_leg_body_frame(3, -BODY_LEN/2, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
+			time.sleep(1)
+			move_single_leg_body_frame(1, BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
+			move_single_leg_body_frame(3, -BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2 +(0.03)*3/2, -0.16, safety=False)
+			time.sleep(1)
+			move_single_leg_body_frame(1, BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2, -0.16, safety=False)
+			move_single_leg_body_frame(3, -BODY_LEN/2+(0.03)*3/2.5, -BODY_WID/2, -0.16, safety=False)
+			time.sleep(1)
 
+			
 	def power_off():
 		lcd.lcd("Down")
 		move_motors({15: -40, 0: -40, 14: 40, 1: 40})
