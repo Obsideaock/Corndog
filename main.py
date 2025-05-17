@@ -210,13 +210,13 @@ def iklegs_move(leg_offsets, step_multiplier=10, speed=10, delay=0.01):
     """
     # your per‐leg home + scale from IKTEST
     leg_cfg = {
-        0: {'base': ( BODY_LEN/2,  BODY_WID/2,  -0.16),
-            'scale': ( 3/3.5,       3/3.5,     3/2.5 )},
-        1: {'base': ( BODY_LEN/2, -BODY_WID/2, -0.16),
-            'scale': (-3/3.5,       3/2,       3/3.75)},
-        2: {'base': (-BODY_LEN/2,  BODY_WID/2,  -0.16),
-            'scale': ( 3/2.5,       3/3.5,     3/2.5 )},
-        3: {'base': (-BODY_LEN/2, -BODY_WID/2,  -0.16),
+        0: {'base': ( (BODY_LEN/2),  BODY_WID/2,  -0.16),
+            'scale': ( 3/3.5*5/5.5,       3/3.5,     3/2.5 )},
+        1: {'base': ( (BODY_LEN/2), -BODY_WID/2, -0.16),
+            'scale': (-3/3.5*5/4,       3/2,       3/3.75)},
+        2: {'base': (-(BODY_LEN/2),  BODY_WID/2,  -0.16),
+            'scale': ( 3/4,       3/3.5,     3/2.5 )},
+        3: {'base': (-(BODY_LEN/2), -BODY_WID/2,  -0.16),
             'scale': (-3/2.5,       3/2,       3/3.75)},
     }
 
@@ -300,13 +300,115 @@ is_handstand = False
 is_walking_backward = False
 is_turning_right = False
 is_turning_left  = False
+is_testing = False
+is_amble = False
 
 # Tkinter GUI
 def create_gui():
 	walkspeed = 15
-	global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling, is_handstand  # Declare walk_button and is_walking as global so it can be accessed in the walk function
+	global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling, is_handstand, is_testing, is_amble  # Declare walk_button and is_walking as global so it can be accessed in the walk function
 	window = tk.Tk()
 	window.title("Robot Control")
+
+	def IKTEST():
+		global is_testing
+		
+		if not is_testing:
+			is_testing = True
+			lcd.lcd("Testing")
+			test_button.config(text="Stop Testing")
+			window.update()
+			
+			#do startup motions
+			
+			testingloop()
+			
+		else:
+			is_testing = False
+			lcd.lcd("Reseting to     Normal")
+			iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)})
+			lcd.clear()
+			test_button.config(text="Test 3 Gait")
+			window.update()
+		
+	def testingloop():
+		if not is_testing:
+			return
+		n=0.3
+		h=6
+		d=6
+		#leg 0 at 0, leg 1 at -2, leg 2 at -4 leg 3 at -6
+		iklegs_move({0:(-0.03+0.04,0,0.01*h), 1:(-0.01+0.04,0,0), 2:(-0.03,0,0), 3:(-0.05,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(0+0.04,0,0.01*h/2), 	 1:(-0.02+0.04,0,0), 2:(-0.04,0,0), 3:(-0.06,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		#leg 0 at -2, leg 1 at -4, leg 2 at -6, leg 3 at 0
+		iklegs_move({0:(-0.01+0.04,0,0), 1:(-0.03+0.04,0,0), 2:(-0.05,0,0), 3:(-0.03,0,0.01*h)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(-0.02+0.04,0,0), 1:(-0.04+0.04,0,0), 2:(-0.06,0,0), 3:(0,0,0.01*h/2)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		#leg 0 at -4, leg 1 at -6, leg 2 at 0, leg 3 at -2
+		iklegs_move({0:(-0.03+0.04,0,0), 1:(-0.05+0.04,0,0), 2:(-0.03,0,0.01*h), 3:(-0.01,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(-0.04+0.04,0,0), 1:(-0.06+0.04,0,0), 2:(0,0,0.01*h/2),	3:(-0.02,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		#leg 0 at -6, leg 1 at 0, leg 2 at -2, leg 3 at -4
+		iklegs_move({0:(-0.05+0.04,0,0), 1:(-0.03+0.04,0,0.01*h), 2:(-0.01,0,0), 3:(-0.03,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(-0.06+0.04,0,0), 1:(0+0.04,0,0.01*h/2), 	2:(-0.02,0,0), 3:(-0.04,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		window.after(0, testingloop)
+		
+	def ambletest():
+		global is_amble
+		
+		if not is_testing:
+			is_amble = True
+			lcd.lcd("Ambling")
+			test_button.config(text="Stop Ambling")
+			window.update()
+			
+			#do startup motions
+			
+			ambleloop()
+			
+		else:
+			is_amble = False
+			lcd.lcd("Reseting to     Normal")
+			iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)})
+			lcd.clear()
+			test_button.config(text="Test Amble")
+			window.update()
+			
+	def ambleloop():
+		
+		if not is_amble:
+			return
+		n=0.3
+		h=6
+		d=6
+		#leg 0 at 0, leg 1 at -2, leg 2 at -4 leg 3 at -6
+		iklegs_move({0:(-0.03+0.04,0,0.01*h), 1:(-0.01+0.04,0,0), 2:(-0.03,0,0), 3:(-0.05,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(0+0.04,0,0.01*h/2), 	 1:(-0.02+0.04,0,0), 2:(-0.04,0,0), 3:(-0.06,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		#leg 0 at -2, leg 1 at -4, leg 2 at -6, leg 3 at 0
+		iklegs_move({0:(-0.01+0.04,0,0), 1:(-0.03+0.04,0,0), 2:(-0.05,0,0), 3:(-0.03,0,0.01*h)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(-0.02+0.04,0,0), 1:(-0.04+0.04,0,0), 2:(-0.06,0,0), 3:(0,0,0.01*h/2)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		#leg 0 at -4, leg 1 at -6, leg 2 at 0, leg 3 at -2
+		iklegs_move({0:(-0.03+0.04,0,0), 1:(-0.05+0.04,0,0), 2:(-0.03,0,0.01*h), 3:(-0.01,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(-0.04+0.04,0,0), 1:(-0.06+0.04,0,0), 2:(0,0,0.01*h/2),	3:(-0.02,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		#leg 0 at -6, leg 1 at 0, leg 2 at -2, leg 3 at -4
+		iklegs_move({0:(-0.05+0.04,0,0), 1:(-0.03+0.04,0,0.01*h), 2:(-0.01,0,0), 3:(-0.03,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		iklegs_move({0:(-0.06+0.04,0,0), 1:(0+0.04,0,0.01*h/2), 	2:(-0.02,0,0), 3:(-0.04,0,0)}, step_multiplier=20, delay=0.1)
+		time.sleep(n)
+		window.after(0, ambleloop)
+		
 
 	def walk():
 		global is_walking, is_walking_backward
@@ -612,29 +714,16 @@ def create_gui():
 
 	def jump():
 		lcd.lcd("Charging jump")
-		move_motors({0: -40, 4: 30, 5: -30, 1: 40, 15: -30, 11: 30, 14: 30, 10: -30})
+		iklegs_move({0:(0,0,0.03),1:(0,0,0.03),2:(0,0,0.03),3:(0,0,0.03)}, step_multiplier=20, speed=0.05)
+		time.sleep(1)
 		lcd.lcd("Jumping")
-		move_motors({0: 50, 4: -30, 5: 30, 1: -50, 15: 50, 11: -20, 14: -50, 10: 20}, delay=0.00001, speed_multiplier=1000)
+		iklegs_move({0:(0,0,-0.03),1:(0,0,-0.03),2:(0,0,-0.03),3:(0,0,-0.03)}, step_multiplier=10, speed=50, delay=0)
 		time.sleep(0.2)
-		move_motors({0: -50, 4: 30, 5: -30, 1: 50, 15: -50, 11: 20, 14: 50, 10: -20}, delay=0.00001, speed_multiplier=1000)
-		time.sleep(0.2)
-		move_motors({0: 40, 4: -30, 5: 30, 1: -40, 15: 30, 11: -30, 14: -30, 10: 30})
-		stand_up()
+		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=10, speed=50, delay=0)
 		lcd.clear()
 
-	def IKTEST():
-		n=0.1
-		while True:
-			iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)}, delay=0.1)
-			time.sleep(n)
-			iklegs_move({0:(0,0,0.03), 1:(0,0,0.03), 2:(0,0,0.03), 3:(0,0,0.03)}, delay=0.1)
-			time.sleep(n)
-			iklegs_move({0:(0.03,0,0.03), 1:(0.03,0,0.03), 2:(0.03,0,0.03), 3:(0.03,0,0.03)}, delay=0.1)
-			time.sleep(n)
-			iklegs_move({0:(0.03,0,0), 1:(0.03,0,0), 2:(0.03,0,0), 3:(0.03,0,0)}, delay=0.1)
-			time.sleep(n)
-			
-			
+	
+
 	def power_off():
 		lcd.lcd("Down")
 		move_motors({15: -40, 0: -40, 14: 40, 1: 40})
@@ -642,7 +731,10 @@ def create_gui():
 		lcd.clear()
 
 	tk.Button(window, text="Stand Up", command=stand_up).pack()
-	tk.Button(window, text="IK Test", command=IKTEST).pack()
+	amble_button = tk.Button(window, text="Test amble", command=ambletest)
+	amble_button.pack()
+	test_button = tk.Button(window, text="Test 3 Gait", command=IKTEST)
+	test_button.pack()
 
 	# Create the walk button with an initial label
 	walk_button = tk.Button(window, text="Start Walking", command=walk)
