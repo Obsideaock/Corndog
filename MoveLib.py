@@ -136,7 +136,7 @@ def shake():
     move_motors({0:-40, 4:15, 5:-15, 1:40})
     move_motors({15:90, 14:-90,11:-60,10:60,0:10,1:-10})
     time.sleep(0.5)
-    move_motors({10:115, 14:-80}, speed_multiplier=25)
+    move_motors({10:130, 14:-80}, speed_multiplier=25)
     time.sleep(.75)
     for _ in range(4):
         move_motors({14:40}, speed_multiplier=15)

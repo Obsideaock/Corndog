@@ -9,6 +9,19 @@ import tkinter as tk
 from math import sqrt, sin, cos, tan, asin, acos, atan, degrees
 import math
 import numpy as np
+
+# --- IMU setup ---
+from adafruit_bno08x.i2c import BNO08X_I2C
+from adafruit_bno08x import (
+	BNO_REPORT_ACCELEROMETER,
+	BNO_REPORT_GYROSCOPE,
+	BNO_REPORT_MAGNETOMETER,
+	BNO_REPORT_LINEAR_ACCELERATION,
+	BNO_REPORT_GRAVITY,
+	BNO_REPORT_ROTATION_VECTOR,
+	BNO_REPORT_GAME_ROTATION_VECTOR,
+	BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR,
+)
 from spot_micro_kinematics.spot_micro_stick_figure import SpotMicroStickFigure
 # import the low-level utilities:
 from spot_micro_kinematics.utilities.transformations import homog_transxyz, homog_rotxyz, ht_inverse
@@ -39,6 +52,154 @@ servos = {channel: servo.Servo(pca.channels[channel]) for channel in servo_chann
 for channel in servos:
 	servos[channel].set_pulse_width_range(500, 2500)
 	servos[channel].actuation_range = 270
+
+i2c = busio.I2C(board.SCL, board.SDA)
+bno = BNO08X_I2C(i2c, address=0x4B)
+
+# Enable all the reports
+_features = [
+	BNO_REPORT_ACCELEROMETER,
+	BNO_REPORT_GYROSCOPE,
+	BNO_REPORT_MAGNETOMETER,
+	BNO_REPORT_LINEAR_ACCELERATION,
+	BNO_REPORT_GRAVITY,
+	BNO_REPORT_ROTATION_VECTOR,
+	BNO_REPORT_GAME_ROTATION_VECTOR,
+	BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR,
+]
+for f in _features:
+	bno.enable_feature(f)
+
+# Offsets for zeroing
+q_grav_correction = (1.0, 0.0, 0.0, 0.0)
+acc_offset = (0.0, 0.0, 0.0)
+gyro_offset = (0.0, 0.0, 0.0)
+mag_offset = (0.0, 0.0, 0.0)
+linacc_offset = (0.0, 0.0, 0.0)
+# we will use quaternions for orientation-based zeroing
+quat_offset = (1.0, 0.0, 0.0, 0.0)
+game_quat_offset = (1.0, 0.0, 0.0, 0.0)
+geomag_quat_offset = (1.0, 0.0, 0.0, 0.0)
+
+def quat_inverse(q):
+	w, x, y, z = q
+	return (w, -x, -y, -z)
+
+def quat_multiply(a, b):
+	w1, x1, y1, z1 = a
+	w2, x2, y2, z2 = b
+	return (
+		w1*w2 - x1*x2 - y1*y2 - z1*z2,
+		w1*x2 + x1*w2 + y1*z2 - z1*y2,
+		w1*y2 - x1*z2 + y1*w2 + z1*x2,
+		w1*z2 + x1*y2 - y1*x2 + z1*w2,
+	)
+	
+def quaternion_between_vectors(a, b):
+	ax, ay, az = a
+	bx, by, bz = b
+	# cross product
+	cx = ay*bz - az*by
+	cy = az*bx - ax*bz
+	cz = ax*by - ay*bx
+	# dot product
+	dot = ax*bx + ay*by + az*bz
+	# norms
+	na = math.sqrt(ax*ax + ay*ay + az*az)
+	nb = math.sqrt(bx*bx + by*by + bz*bz)
+	if na == 0 or nb == 0:
+		return (1.0, 0.0, 0.0, 0.0)
+	# build quaternion (w, x, y, z)
+	w = na*nb + dot
+	x, y, z = cx, cy, cz
+	# handle the 180degrees corner case if vectors are opposite
+	if w < 1e-6 * na * nb:
+		# pick an arbitrary orthogonal axis
+		if abs(ax) > abs(az):
+			x, y, z = -ay, ax, 0.0
+		else:
+			x, y, z = 0.0, -az, ay
+		w = 0.0
+	# normalize
+	norm = math.sqrt(w*w + x*x + y*y + z*z)
+	return (w/norm, x/norm, y/norm, z/norm)
+
+def rotate_vector_by_quat(v, q):
+	# rotates vector v by quaternion q
+	q_conj = quat_inverse(q)
+	# represent v as quaternion with zero scalar part
+	vx, vy, vz = v
+	v_q = (0.0, vx, vy, vz)
+	tmp = quat_multiply(q, v_q)
+	res = quat_multiply(tmp, q_conj)
+	return (res[1], res[2], res[3])
+
+def zero_imu():
+	global acc_offset, gyro_offset, mag_offset, linacc_offset
+	global quat_offset, game_quat_offset, geomag_quat_offset
+	global q_grav_correction
+
+	# your existing captures
+	acc_offset       = bno.acceleration
+	gyro_offset      = bno.gyro
+	mag_offset       = bno.magnetic
+	linacc_offset    = bno.linear_acceleration
+	quat_offset      = bno.quaternion
+	game_quat_offset = bno.game_quaternion
+	geomag_quat_offset = bno.geomagnetic_quaternion
+
+	# compute the *rotated* gravity at zero time:
+	raw_g = bno.gravity
+	inv0  = quat_inverse(quat_offset)
+	g0    = rotate_vector_by_quat(raw_g, inv0)
+
+	# build the small quaternion that sends g0 ? (0,0,1)
+	q_grav_correction = quaternion_between_vectors(g0, (0.0, 0.0, 1.0))
+
+# Wrapper getters
+def get_acceleration():
+	x, y, z = bno.acceleration
+	ox, oy, oz = acc_offset
+	return (x-ox, y-oy, z-oz)
+
+def get_gyroscope():
+	x, y, z = bno.gyro
+	ox, oy, oz = gyro_offset
+	return (x-ox, y-oy, z-oz)
+
+def get_magnetic():
+	x, y, z = bno.magnetic
+	ox, oy, oz = mag_offset
+	return (x-ox, y-oy, z-oz)
+
+def get_linear_acceleration():
+	x, y, z = bno.linear_acceleration
+	ox, oy, oz = linacc_offset
+	return (x-ox, y-oy, z-oz)
+
+def get_quaternion():
+	q = bno.quaternion
+	inv0 = quat_inverse(quat_offset)
+	return quat_multiply(inv0, q)
+
+def get_game_quaternion():
+	q = bno.game_quaternion
+	inv0 = quat_inverse(game_quat_offset)
+	return quat_multiply(inv0, q)
+
+def get_geomagnetic_quaternion():
+	q = bno.geomagnetic_quaternion
+	inv0 = quat_inverse(geomag_quat_offset)
+	return quat_multiply(inv0, q)
+
+def get_gravity():
+	# rotate raw gravity into your zeroed frame:
+	g = bno.gravity
+	inv0 = quat_inverse(quat_offset)
+	gx, gy, gz = rotate_vector_by_quat(g, inv0)
+	# then apply our correction rotation
+	#gx, gy, gz = rotate_vector_by_quat((gx, gy, gz), q_grav_correction)
+	return (gx/9.80665, gy/9.80665, gz/9.80665)
 
 
 def initialize_servo_angles():
@@ -126,6 +287,10 @@ def stand_up():
 	set_motor_angles([5, 4, 0, 1], target_positions)
 	set_motor_angles([14, 15, 10, 11], target_positions)
 	initialize_servo_angles()
+	time.sleep(0.5)
+	#zero_imu()
+	global prev_roll, prev_pitch
+	prev_roll = prev_pitch = None
 
 BODY_LEN = 0.186  # m
 BODY_WID = 0.078  # m
@@ -199,84 +364,84 @@ def move_single_leg_body_frame(leg_idx, x_body, y_body, z_body, safety=False, sp
 		move_motors(movements, speed_multiplier=speed)
 		
 def iklegs_move(leg_offsets, step_multiplier=10, speed=10, delay=0.01):
-    """
-    Move multiple legs together along straight‐line paths in body‐space.
-    
-    leg_offsets: dict mapping leg_idx → (dx_u, dy_u, dz_u)
-      where (0,0,0) means “home” and units are the same as your IKTEST.
-    step_multiplier: how many interpolation steps per unit of offset
-    speed: higher → fewer total steps
-    delay: pause between each micro‐step (s)
-    """
-    # your per‐leg home + scale from IKTEST
-    leg_cfg = {
-        0: {'base': ( (BODY_LEN/2),  BODY_WID/2,  -0.16),
-            'scale': ( 3/3.5*5/5.5,       3/3.5,     3/2.5 )},
-        1: {'base': ( (BODY_LEN/2), -BODY_WID/2, -0.16),
-            'scale': (-3/3.5*5/4,       3/2,       3/3.75)},
-        2: {'base': (-(BODY_LEN/2),  BODY_WID/2,  -0.16),
-            'scale': ( 3/4,       3/3.5,     3/2.5 )},
-        3: {'base': (-(BODY_LEN/2), -BODY_WID/2,  -0.16),
-            'scale': (-3/2.5,       3/2,       3/3.75)},
-    }
+	"""
+	Move multiple legs together along straight‐line paths in body‐space.
+	
+	leg_offsets: dict mapping leg_idx → (dx_u, dy_u, dz_u)
+	  where (0,0,0) means “home” and units are the same as your IKTEST.
+	step_multiplier: how many interpolation steps per unit of offset
+	speed: higher → fewer total steps
+	delay: pause between each micro‐step (s)
+	"""
+	# your per‐leg home + scale from IKTEST
+	leg_cfg = {
+		0: {'base': ( (BODY_LEN/2),  BODY_WID/2,  -0.16),
+			'scale': ( 3/3.5*5/5.5,       3/3.5,     3/2.5 )},
+		1: {'base': ( (BODY_LEN/2), -BODY_WID/2, -0.16),
+			'scale': (-3/3.5*5/4,       3/2,       3/3.75)},
+		2: {'base': (-(BODY_LEN/2),  BODY_WID/2,  -0.16),
+			'scale': ( 3/4,       3/3.5,     3/2.5 )},
+		3: {'base': (-(BODY_LEN/2), -BODY_WID/2,  -0.16),
+			'scale': (-3/2.5,       3/2,       3/3.75)},
+	}
 
-    def clamp(a):  
-        return max(0, min(270, a))
+	def clamp(a):  
+		return max(0, min(270, a))
 
-    # 1) figure out how many micro‐steps
-    max_steps = 0
-    for dx, dy, dz in leg_offsets.values():
-        max_steps = max(max_steps,
-                        abs(dx)*step_multiplier,
-                        abs(dy)*step_multiplier,
-                        abs(dz)*step_multiplier)
-    steps = max(1, int(round(max_steps/speed)))
+	# 1) figure out how many micro‐steps
+	max_steps = 0
+	for dx, dy, dz in leg_offsets.values():
+		max_steps = max(max_steps,
+						abs(dx)*step_multiplier,
+						abs(dy)*step_multiplier,
+						abs(dz)*step_multiplier)
+	steps = max(1, int(round(max_steps/speed)))
 
-    # 2) per‐leg per‐step increments in user‐space
-    incs = {
-        leg: (dx/steps, dy/steps, dz/steps)
-        for leg, (dx, dy, dz) in leg_offsets.items()
-    }
+	# 2) per‐leg per‐step increments in user‐space
+	incs = {
+		leg: (dx/steps, dy/steps, dz/steps)
+		for leg, (dx, dy, dz) in leg_offsets.items()
+	}
 
-    # 3) loop through each micro‐step
-    for s in range(1, steps+1):
-        # build a combined delta‐map for all servos this step
-        step_movements = {}
+	# 3) loop through each micro‐step
+	for s in range(1, steps+1):
+		# build a combined delta‐map for all servos this step
+		step_movements = {}
 
-        for leg_idx, (inc_x, inc_y, inc_z) in incs.items():
-            # current offset in user‐space
-            ux = inc_x * s
-            uy = inc_y * s
-            uz = inc_z * s
+		for leg_idx, (inc_x, inc_y, inc_z) in incs.items():
+			# current offset in user‐space
+			ux = inc_x * s
+			uy = inc_y * s
+			uz = inc_z * s
 
-            cfg = leg_cfg[leg_idx]
-            # map into body coords
-            xb = cfg['base'][0] + ux * cfg['scale'][0]
-            yb = cfg['base'][1] + uy * cfg['scale'][1]
-            zb = cfg['base'][2] + uz * cfg['scale'][2]
+			cfg = leg_cfg[leg_idx]
+			# map into body coords
+			xb = cfg['base'][0] + ux * cfg['scale'][0]
+			yb = cfg['base'][1] + uy * cfg['scale'][1]
+			zb = cfg['base'][2] + uz * cfg['scale'][2]
 
-            # transform → hip, solve IK
-            P_body = np.array([xb, yb, zb, 1.0])
-            P_hip  = INV_LEG[leg_idx] @ P_body
-            front = (not (leg_idx in (0,1))) ^ (leg_idx in (2,3))
-            q1, q2, q3 = ikine(P_hip[0], P_hip[1], P_hip[2],
-                               L1, L2, L3, legs12=front)
+			# transform → hip, solve IK
+			P_body = np.array([xb, yb, zb, 1.0])
+			P_hip  = INV_LEG[leg_idx] @ P_body
+			front = (not (leg_idx in (0,1))) ^ (leg_idx in (2,3))
+			q1, q2, q3 = ikine(P_hip[0], P_hip[1], P_hip[2],
+							   L1, L2, L3, legs12=front)
 
-            # convert to servo angles
-            user_deg = to_user_angles(leg_idx, (q1, q2, q3))
+			# convert to servo angles
+			user_deg = to_user_angles(leg_idx, (q1, q2, q3))
 
-            # assemble this leg’s channel→delta
-            for joint, tgt in enumerate(user_deg, start=1):
-                ch = CHANNEL_MAP[leg_idx][joint]
-                step_movements[ch] = tgt - servo_angles[ch]
+			# assemble this leg’s channel→delta
+			for joint, tgt in enumerate(user_deg, start=1):
+				ch = CHANNEL_MAP[leg_idx][joint]
+				step_movements[ch] = tgt - servo_angles[ch]
 
-        # 4) apply all those little deltas in one go
-        for ch, delta in step_movements.items():
-            new = clamp(servo_angles[ch] + delta)
-            servos[ch].angle     = new
-            servo_angles[ch]      = new
+		# 4) apply all those little deltas in one go
+		for ch, delta in step_movements.items():
+			new = clamp(servo_angles[ch] + delta)
+			servos[ch].angle     = new
+			servo_angles[ch]      = new
 
-        time.sleep(delay)
+		time.sleep(delay)
 
 
 def enable_servos():
@@ -300,88 +465,35 @@ is_handstand = False
 is_walking_backward = False
 is_turning_right = False
 is_turning_left  = False
-is_testing = False
 is_amble = False
+is_live_ik   = False
+prev_roll, prev_pitch = None, None
 
 # Tkinter GUI
 def create_gui():
 	walkspeed = 15
-	global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling, is_handstand, is_testing, is_amble  # Declare walk_button and is_walking as global so it can be accessed in the walk function
+	global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling, is_handstand, is_amble, is_live_ik, prev_roll, prev_pitch # Declare walk_button and is_walking as global so it can be accessed in the walk function
 	window = tk.Tk()
 	window.title("Robot Control")
-
-	def IKTEST():
-		global is_testing
-		
-		if not is_testing:
-			is_testing = True
-			lcd.lcd("Testing")
-			test_button.config(text="Stop Testing")
-			window.update()
-			
-			#do startup motions
-			
-			testingloop()
-			
-		else:
-			is_testing = False
-			lcd.lcd("Reseting to     Normal")
-			iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)})
-			lcd.clear()
-			test_button.config(text="Test 3 Gait")
-			window.update()
-		
-	def testingloop():
-		if not is_testing:
-			return
-		n=0.3
-		h=6
-		d=6
-		#leg 0 at 0, leg 1 at -2, leg 2 at -4 leg 3 at -6
-		iklegs_move({0:(-0.03+0.04,0,0.01*h), 1:(-0.01+0.04,0,0), 2:(-0.03,0,0), 3:(-0.05,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(0+0.04,0,0.01*h/2), 	 1:(-0.02+0.04,0,0), 2:(-0.04,0,0), 3:(-0.06,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		#leg 0 at -2, leg 1 at -4, leg 2 at -6, leg 3 at 0
-		iklegs_move({0:(-0.01+0.04,0,0), 1:(-0.03+0.04,0,0), 2:(-0.05,0,0), 3:(-0.03,0,0.01*h)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(-0.02+0.04,0,0), 1:(-0.04+0.04,0,0), 2:(-0.06,0,0), 3:(0,0,0.01*h/2)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		#leg 0 at -4, leg 1 at -6, leg 2 at 0, leg 3 at -2
-		iklegs_move({0:(-0.03+0.04,0,0), 1:(-0.05+0.04,0,0), 2:(-0.03,0,0.01*h), 3:(-0.01,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(-0.04+0.04,0,0), 1:(-0.06+0.04,0,0), 2:(0,0,0.01*h/2),	3:(-0.02,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		#leg 0 at -6, leg 1 at 0, leg 2 at -2, leg 3 at -4
-		iklegs_move({0:(-0.05+0.04,0,0), 1:(-0.03+0.04,0,0.01*h), 2:(-0.01,0,0), 3:(-0.03,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(-0.06+0.04,0,0), 1:(0+0.04,0,0.01*h/2), 	2:(-0.02,0,0), 3:(-0.04,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		window.after(0, testingloop)
 		
 	def ambletest():
 		global is_amble
 		
-		if not is_testing:
+		if not is_amble:
 			is_amble = True
 			lcd.lcd("Ambling")
-			test_button.config(text="Stop Ambling")
+			amble_button.config(text="Stop Ambling")
 			window.update()
-			
-			#do startup motions
-			
-			ambleloop()
-			
+			testingloop()
 		else:
 			is_amble = False
 			lcd.lcd("Reseting to     Normal")
 			iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)})
 			lcd.clear()
-			test_button.config(text="Test Amble")
+			amble_button.config(text="Test Amble")
 			window.update()
-			
-	def ambleloop():
 		
+	def testingloop():
 		if not is_amble:
 			return
 		n=0.3
@@ -407,9 +519,8 @@ def create_gui():
 		time.sleep(n)
 		iklegs_move({0:(-0.06+0.04,0,0), 1:(0+0.04,0,0.01*h/2), 	2:(-0.02,0,0), 3:(-0.04,0,0)}, step_multiplier=20, delay=0.1)
 		time.sleep(n)
-		window.after(0, ambleloop)
-		
-
+		window.after(0, testingloop)
+			
 	def walk():
 		global is_walking, is_walking_backward
 
@@ -722,7 +833,107 @@ def create_gui():
 		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=10, speed=50, delay=0)
 		lcd.clear()
 
-	
+	def show_live_imu():
+		imu_win = tk.Toplevel(window)
+		imu_win.title("Live IMU Data")
+		imu_win.geometry("700x180")
+		
+		# Create labels for each sensor
+		lbl_grav = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+		lbl_gyro = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+		lbl_mag  = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+		lbl_lin  = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+		lbl_quat = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+		for lbl in (lbl_grav, lbl_gyro, lbl_mag, lbl_lin, lbl_quat):
+			lbl.pack(anchor="w", padx=10, pady=2)
+		
+		# Recursive updater
+		def update_imu():
+			# If the window was closed, stop updating
+			if not imu_win.winfo_exists():
+				return
+			
+			grav  = get_gravity()
+			gyro  = get_gyroscope()
+			mag   = get_magnetic()
+			lin   = get_linear_acceleration()
+			quat  = get_quaternion()
+			
+			lbl_grav.config(text=f"Gravity (unit)     : x:{grav[0]:.2f}, y:{grav[1]:.2f}, z:{grav[2]:.2f}")
+			lbl_gyro.config(text=f"Gyro (degrees/s)   : {gyro}")
+			lbl_mag .config(text=f"Mag (microT)       : {mag}")
+			lbl_lin .config(text=f"Lin Accel          : {lin}")
+			lbl_quat.config(text=f"Quaternion         : {quat}")
+			
+			# schedule next update in 100?ms
+			imu_win.after(100, update_imu)
+		
+		update_imu()
+		
+	def toggle_live_ik():
+		global is_live_ik, prev_roll, prev_pitch
+		if not is_live_ik:
+			is_live_ik = True
+			lcd.lcd("Live IK On")
+			prev_roll, prev_pitch = None, None
+			liveik_button.config(text="Stop Live IK")
+			window.update()
+			live_ik_loop()
+		else:
+			is_live_ik = False
+			lcd.lcd("Live IK Off")
+			liveik_button.config(text="Start Live IK")
+			window.update()
+
+	def live_ik_loop():
+		"""Read gravity, compute roll/pitch, map to z-offsets, call IK, re-schedule."""
+		global prev_roll, prev_pitch, is_live_ik
+		half_len = BODY_LEN / 2.0
+		half_wid = BODY_WID / 2.0
+		
+		alpha_smooth = 0.075
+		LIVE_IK_GAIN = 5.8
+
+		if not is_live_ik:
+			return
+
+		# 1) Read gravity & compute roll/pitch
+		gx, gy, gz = get_gravity()
+		roll  = math.atan2( gy,       gz)
+		pitch = math.atan2(-gx, math.hypot(gy, gz))
+
+		# 2) Smooth
+		if prev_roll is None:
+			roll_f, pitch_f = roll, pitch
+		else:
+			roll_f  = (1 - alpha_smooth) * prev_roll  + alpha_smooth * roll
+			pitch_f = (1 - alpha_smooth) * prev_pitch + alpha_smooth * pitch
+		prev_roll, prev_pitch = roll_f, pitch_f
+
+		# 3) Compute base deltas
+		delta_fb = half_len * math.tan(pitch_f)
+		delta_lr = half_wid * math.tan(roll_f)
+
+		# 4) Apply gain 
+		raw = {
+			0: -delta_fb +  delta_lr,
+			1: -delta_fb + -delta_lr,
+			2: +delta_fb +  delta_lr,
+			3: +delta_fb + -delta_lr,
+		}
+		z_off = {}
+		
+		for leg, val in raw.items():
+			v = LIVE_IK_GAIN * val
+			z_off[leg] = v
+		
+		# 5 Call your multi-leg IK move:
+		#    leg_offsets: (dx,dy,dz) in body frame relative to home
+		leg_offsets = {idx: (0.0, 0.0, z_off[idx]) for idx in z_off}
+		iklegs_move(leg_offsets, step_multiplier=1, speed=20, delay=0.0)
+
+		# 5 Loop at ~20?Hz:
+		window.after(50, live_ik_loop)
 
 	def power_off():
 		lcd.lcd("Down")
@@ -733,9 +944,7 @@ def create_gui():
 	tk.Button(window, text="Stand Up", command=stand_up).pack()
 	amble_button = tk.Button(window, text="Test amble", command=ambletest)
 	amble_button.pack()
-	test_button = tk.Button(window, text="Test 3 Gait", command=IKTEST)
-	test_button.pack()
-
+	
 	# Create the walk button with an initial label
 	walk_button = tk.Button(window, text="Start Walking", command=walk)
 	walk_button.pack()
@@ -762,7 +971,11 @@ def create_gui():
 	tk.Button(window, text="Shake", command=shake).pack()
 	tk.Button(window, text="Dance", command=dance).pack()
 	tk.Button(window, text="Jump", command=jump).pack()
+	tk.Button(window, text="Show Live IMU", command=show_live_imu).pack()
+	liveik_button = tk.Button(window, text="Start Live IK", command=toggle_live_ik)
+	liveik_button.pack()
 	tk.Button(window, text="Lie Down", command=power_off).pack()
+	
 
 	window.mainloop()
 
