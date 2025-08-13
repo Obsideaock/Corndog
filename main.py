@@ -134,27 +134,29 @@ def rotate_vector_by_quat(v, q):
 	res = quat_multiply(tmp, q_conj)
 	return (res[1], res[2], res[3])
 
+MOUNT_RPY_DEG = (-2.0, -2.0, 0.0)  # (roll, pitch, yaw) of the IMU relative to the robot body, in degrees
+
+def euler_deg_to_quat(roll_deg, pitch_deg, yaw_deg):
+    r = math.radians(roll_deg); p = math.radians(pitch_deg); y = math.radians(yaw_deg)
+    cr, sr = math.cos(r/2), math.sin(r/2)
+    cp, sp = math.cos(p/2), math.sin(p/2)
+    cy, sy = math.cos(y/2), math.sin(y/2)
+    # quaternion (w, x, y, z)
+    return (
+        cy*cp*cr + sy*sp*sr,
+        cy*cp*sr - sy*sp*cr,
+        cy*sp*cr + sy*cp*sr,
+        sy*cp*cr - cy*sp*sr,
+    )
+
+MOUNT_Q = euler_deg_to_quat(*MOUNT_RPY_DEG)
+
+
+
 def zero_imu():
-	global acc_offset, gyro_offset, mag_offset, linacc_offset
-	global quat_offset, game_quat_offset, geomag_quat_offset
-	global q_grav_correction
-
-	# your existing captures
-	acc_offset       = bno.acceleration
-	gyro_offset      = bno.gyro
-	mag_offset       = bno.magnetic
-	linacc_offset    = bno.linear_acceleration
-	quat_offset      = bno.quaternion
-	game_quat_offset = bno.game_quaternion
-	geomag_quat_offset = bno.geomagnetic_quaternion
-
-	# compute the *rotated* gravity at zero time:
-	raw_g = bno.gravity
-	inv0  = quat_inverse(quat_offset)
-	g0    = rotate_vector_by_quat(raw_g, inv0)
-
-	# build the small quaternion that sends g0 ? (0,0,1)
-	q_grav_correction = quaternion_between_vectors(g0, (0.0, 0.0, 1.0))
+    """Repurposed: do NOT zero to current pose; just apply the fixed, known mount offset."""
+    global MOUNT_Q
+    MOUNT_Q = euler_deg_to_quat(*MOUNT_RPY_DEG)
 
 # Wrapper getters
 def get_acceleration():
@@ -195,10 +197,11 @@ def get_geomagnetic_quaternion():
 def get_gravity():
 	# rotate raw gravity into your zeroed frame:
 	g = bno.gravity
-	inv0 = quat_inverse(quat_offset)
-	gx, gy, gz = rotate_vector_by_quat(g, inv0)
+	#inv0 = quat_inverse(quat_offset)
+	#gx, gy, gz = rotate_vector_by_quat(g, inv0)
+	gx, gy, gz = rotate_vector_by_quat(g, MOUNT_Q)
 	# then apply our correction rotation
-	#gx, gy, gz = rotate_vector_by_quat((gx, gy, gz), q_grav_correction)
+	#gx, gy, gz = rotate_vector_by_quat((gx, gy, gz), q_grav_correction)    #leo commented this out
 	return (gx/9.80665, gy/9.80665, gz/9.80665)
 
 
@@ -288,7 +291,7 @@ def stand_up():
 	set_motor_angles([14, 15, 10, 11], target_positions)
 	initialize_servo_angles()
 	time.sleep(0.5)
-	#zero_imu()
+	zero_imu()   #leo commented this out
 	global prev_roll, prev_pitch
 	prev_roll = prev_pitch = None
 
@@ -319,7 +322,7 @@ CHANNEL_MAP = {
 INV_LEG = {}
 ht_body0 = homog_transxyz(0,0,0) @ homog_rotxyz(0,0,0)
 for leg_idx, tf_fn in LEG_TRANSFORMS.items():
-	# T_body→hip
+	# T_body→hip        #JH: not sure why this is commented out
 	T = tf_fn(ht_body0, BODY_LEN, BODY_WID)
 	INV_LEG[leg_idx] = ht_inverse(T)
 
@@ -882,7 +885,9 @@ def create_gui():
 		else:
 			is_live_ik = False
 			lcd.lcd("Live IK Off")
+			time.sleep(0.2)
 			liveik_button.config(text="Start Live IK")
+			lcd.clear()
 			window.update()
 
 	def live_ik_loop():
@@ -891,16 +896,16 @@ def create_gui():
 		half_len = BODY_LEN / 2.0
 		half_wid = BODY_WID / 2.0
 		
-		alpha_smooth = 0.075
-		LIVE_IK_GAIN = 5.8
+		alpha_smooth = 0.07
+		LIVE_IK_GAIN = 5
 
 		if not is_live_ik:
 			return
 
 		# 1) Read gravity & compute roll/pitch
 		gx, gy, gz = get_gravity()
-		roll  = math.atan2( gy,       gz)
-		pitch = math.atan2(-gx, math.hypot(gy, gz))
+		roll  = math.atan2(-gy,       gz)
+		pitch = math.atan2(gx, math.hypot(gy, gz))
 
 		# 2) Smooth
 		if prev_roll is None:
