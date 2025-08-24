@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
         if "Connected" in wifi_status or "Off" in wifi_status:
             # Show for 30 seconds, then exit
-            time.sleep(90)
+            time.sleep(30)
             lcd.clear()
             break
         else:
