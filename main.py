@@ -29,7 +29,7 @@ from spot_micro_kinematics.utilities.spot_micro_kinematics import (
 	t_rightback, t_rightfront, t_leftfront, t_leftback, ikine
 )
 
-sys.path.insert(0, '/home/Corndog')
+sys.path.insert(0, '/home/Corndog/')
 from lcd import lcd_library as lcd
 
 # Initialize I2C bus and PCA9685 module
@@ -513,506 +513,490 @@ prev_roll, prev_pitch = None, None
 
 # Tkinter GUI
 def create_gui():
-	walkspeed = 15
-	global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling, is_handstand, is_amble, is_live_ik, prev_roll, prev_pitch
-	window = tk.Tk()
-	window.title("Robot Control")
-
-	def ambletest():
-		global is_amble
-
-		if not is_amble:
-			is_amble = True
-			lcd.lcd("Ambling")
-			amble_button.config(text="Stop Ambling")
-			window.update()
-			testingloop()
-		else:
-			is_amble = False
-			lcd.lcd("Reseting to     Normal")
-			iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)})
-			lcd.clear()
-			amble_button.config(text="Test Amble")
-			window.update()
-
-	def testingloop():
-		if not is_amble:
-			return
-		n=0.3
-		h=6
-		d=6
-		#leg 0 at 0, leg 1 at -2, leg 2 at -4 leg 3 at -6
-		iklegs_move({0:(-0.03+0.04,0,0.01*h), 1:(-0.01+0.04,0,0), 2:(-0.03,0,0), 3:(-0.05,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(0+0.04,0,0.01*h/2),      1:(-0.02+0.04,0,0), 2:(-0.04,0,0), 3:(-0.06,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		#leg 0 at -2, leg 1 at -4, leg 2 at -6, leg 3 at 0
-		iklegs_move({0:(-0.01+0.04,0,0), 1:(-0.03+0.04,0,0), 2:(-0.05,0,0), 3:(-0.03,0,0.01*h)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(-0.02+0.04,0,0), 1:(-0.04+0.04,0,0), 2:(-0.06,0,0), 3:(0,0,0.01*h/2)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		#leg 0 at -4, leg 1 at -6, leg 2 at 0, leg 3 at -2
-		iklegs_move({0:(-0.03+0.04,0,0), 1:(-0.05+0.04,0,0), 2:(-0.03,0,0.01*h), 3:(-0.01,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(-0.04+0.04,0,0), 1:(-0.06+0.04,0,0), 2:(0,0,0.01*h/2),    3:(-0.02,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		#leg 0 at -6, leg 1 at 0, leg 2 at -2, leg 3 at -4
-		iklegs_move({0:(-0.05+0.04,0,0), 1:(-0.03+0.04,0,0.01*h), 2:(-0.01,0,0), 3:(-0.03,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		iklegs_move({0:(-0.06+0.04,0,0), 1:(0+0.04,0,0.01*h/2),     2:(-0.02,0,0), 3:(-0.04,0,0)}, step_multiplier=20, delay=0.1)
-		time.sleep(n)
-		window.after(0, testingloop)
-
-	def walk():
-		global is_walking, is_walking_backward
-
-		# If we’re in backward mode, shut that down first
-		is_walking_backward = False
-
-		if not is_walking:
-			# Start forward walking
-			is_walking = True
-			lcd.lcd("Walking")
-			walk_button.config(text="Stop Walking")
-			window.update()
-
-			move_motors({10: -20, 4: 20, 1: 35, 15: -35}, speed_multiplier=walkspeed)
-			move_motors({11: -20, 5: 20, 1: -35, 15: 35}, speed_multiplier=walkspeed)
-
-			walking_loop()
-		else:
-			# Stop forward walking
-			is_walking = False
-			lcd.lcd("Reseting to     Normal")
-
-			move_motors({11: 20, 5: -20, 0: -35, 14: 35}, speed_multiplier=walkspeed)
-			move_motors({10: 20, 4: -20, 0: 35, 14: -35}, speed_multiplier=walkspeed)
-
-			lcd.clear()
-			walk_button.config(text="Start Walking")
-			window.update()
-
-	def walking_loop():
-		if not is_walking:
-			return
-		lcd.lcd("Walking 1/4")
-		move_motors({11: 40, 5: -40, 0: -30, 14: 30}, speed_multiplier=walkspeed)
-		lcd.lcd("Walking 2/4")
-		move_motors({10: 40, 4: -40, 0: 30, 14: -30}, speed_multiplier=walkspeed)
-		lcd.lcd("Walking 3/4")
-		move_motors({10: -40, 4: 40, 1: 30, 15: -30}, speed_multiplier=walkspeed)
-		lcd.lcd("Walking 4/4")
-		move_motors({11: -40, 5: 40, 1: -30, 15: 30}, speed_multiplier=walkspeed)
-		window.after(0, walking_loop)
-
-	def walk_backwards():
-		global is_walking, is_walking_backward
-
-		# If we’re in forward mode, shut that down first
-		is_walking = False
-
-		if not is_walking_backward:
-			# Start backward walking
-			is_walking_backward = True
-			lcd.lcd("Backwards")
-			walk_button.config(text="Stop Backwards")
-			window.update()
-
-			# Reverse the two-step start sequence
-			move_motors({10: -20, 4: 20, 1: 35, 15: -35}, speed_multiplier=walkspeed)
-			move_motors({11: -20, 5: 20, 1: -35, 15: 35}, speed_multiplier=walkspeed)
-
-			walking_loop_backwards()
-		else:
-			# Stop backward walking
-			is_walking_backward = False
-			lcd.lcd("Reseting to     Normal")
-
-			# Reverse the reset sequence
-			move_motors({11: 20, 5: -20, 1: 35, 15: -35}, speed_multiplier=walkspeed)
-			move_motors({10: 20, 4: -20, 1: -35, 15: 35}, speed_multiplier=walkspeed)
-
-			lcd.clear()
-			walk_button.config(text="Start Backwards")
-			window.update()
-
-	def walking_loop_backwards():
-		if not is_walking_backward:
-			return
-		lcd.lcd("Back 1/4")
-		move_motors({11:40, 5:-40, 15:-30, 1:30}, speed_multiplier=walkspeed)
-		lcd.lcd("Back 2/4")
-		move_motors({10: 40,  4:-40,15:30, 1:-30}, speed_multiplier=walkspeed)
-		lcd.lcd("Back 3/4")
-		move_motors({10: -40, 4:40, 0:-30, 14: 30}, speed_multiplier=walkspeed)
-		lcd.lcd("Back 4/4")
-		move_motors({11:-40, 5:40, 0:30,  14: -30}, speed_multiplier=walkspeed)
-		window.after(0, walking_loop_backwards)
-
-	def turn_left():
-		global is_turning_left, is_turning_right, is_walking
-		is_turning_right = False
-		turn_right_button.config(text="Turn Right")
-		is_walking = False
-		walk_button.config(text="Start Walking")
-
-		scale_map = lambda ch, v: v * (TURN_SCALE if ch in LEFT_CHANNELS else 1.0)
-
-		if not is_turning_left:
-			is_turning_left = True
-			lcd.lcd("Turning Left")
-			turn_left_button.config(text="Stop Left")
-			window.update()
-
-			# PRE-LOOP OFFSETS (scaled on left side)
-			pre1 = { ch: scale_map(ch, v) for ch, v in {10:-20, 4:20, 1:35, 15:-35}.items() }
-			pre2 = { ch: scale_map(ch, v) for ch, v in {11:-20, 5:20, 1:-35, 15:35}.items() }
-			move_motors(pre1, speed_multiplier=15)
-			move_motors(pre2, speed_multiplier=15)
-
-			turning_left_loop()
-		else:
-			is_turning_left = False
-			lcd.lcd("Resetting")
-			turn_left_button.config(text="Turn Left")
-			window.update()
-
-			# POST-LOOP RETURN (also scaled on left side)
-			post1 = { ch: scale_map(ch, v) for ch, v in {11:20, 5:-20, 0:-35, 14:35}.items() }
-			post2 = { ch: scale_map(ch, v) for ch, v in {10:20, 4:-20, 0:35, 14:-35}.items() }
-			move_motors(post1, speed_multiplier=15)
-			move_motors(post2, speed_multiplier=15)
-
-			lcd.clear()
-
-	def turning_left_loop():
-		if not is_turning_left:
-			return
-
-		# scales: left side small, right side full
-		L, R = TURN_SCALE, 1.0
-
-		lcd.lcd("Turning Left 1/4")
-		move_motors({11:  40*L, 5: -40*R,  0: -30*L, 14:  30*R}, speed_multiplier=15)
-
-		lcd.lcd("Turning Left 2/4")
-		move_motors({10:  40*R, 4: -40*L,  0:  30*L, 14: -30*R}, speed_multiplier=15)
-
-		lcd.lcd("Turning Left 3/4")
-		move_motors({10: -40*R, 4:  40*L,  1:  30*R, 15: -30*L}, speed_multiplier=15)
-
-		lcd.lcd("Turning Left 4/4")
-		move_motors({11: -40*L, 5:  40*R,  1: -30*R, 15:  30*L}, speed_multiplier=15)
-
-		window.after(0, turning_left_loop)
-
-	def turn_right():
-		global is_turning_left, is_turning_right, is_walking
-		is_turning_left = False
-		turn_left_button.config(text="Turn Left")
-		is_walking = False
-		walk_button.config(text="Start Walking")
-
-		scale_map = lambda ch, v: v * (TURN_SCALE if ch in RIGHT_CHANNELS else 1.0)
-
-		if not is_turning_right:
-			is_turning_right = True
-			lcd.lcd("Turning Right")
-			turn_right_button.config(text="Stop Right")
-			window.update()
-
-			# PRE-LOOP OFFSETS (scaled on right side)
-			pre1 = { ch: scale_map(ch, v) for ch, v in {10:-20, 4:20, 1:35, 15:-35}.items() }
-			pre2 = { ch: scale_map(ch, v) for ch, v in {11:-20, 5:20, 1:-35, 15:35}.items() }
-			move_motors(pre1, speed_multiplier=15)
-			move_motors(pre2, speed_multiplier=15)
-
-			turning_right_loop()
-		else:
-			is_turning_right = False
-			lcd.lcd("Resetting")
-			turn_right_button.config(text="Turn Right")
-			window.update()
-
-			# POST-LOOP RETURN (scaled on right side)
-			post1 = { ch: scale_map(ch, v) for ch, v in {11:20, 5:-20, 0:-35, 14:35}.items() }
-			post2 = { ch: scale_map(ch, v) for ch, v in {10:20, 4:-20, 0:35, 14:-35}.items() }
-			move_motors(post1, speed_multiplier=15)
-			move_motors(post2, speed_multiplier=15)
-
-			lcd.clear()
-
-	def turning_right_loop():
-		if not is_turning_right:
-			return
-
-		# scales: right side small, left side full
-		R, L = TURN_SCALE, 1.0
-
-		lcd.lcd("Turning Right 1/4")
-		move_motors({11:  40*L, 5: -40*R,  0: -30*L, 14:  30*R}, speed_multiplier=15)
-
-		lcd.lcd("Turning Right 2/4")
-		move_motors({10:  40*R, 4: -40*L,  0:  30*L, 14: -30*R}, speed_multiplier=15)
-
-		lcd.lcd("Turning Right 3/4")
-		move_motors({10: -40*R, 4:  40*L,  1:  30*R, 15: -30*L}, speed_multiplier=15)
-
-		lcd.lcd("Turning Right 4/4")
-		move_motors({11: -40*L, 5:  40*R,  1: -30*R, 15:  30*L}, speed_multiplier=15)
-
-		window.after(0, turning_right_loop)
-
-	def kneel():
-		global is_kneeling
-
-		if not is_kneeling:
-			# Start kneeling
-			is_kneeling = True
-			lcd.lcd("Kneeling")
-			kneel_button.config(text="Unkneel")
-			window.update()
-			move_motors({15: -30, 11: 30, 10: -30, 14: 30})
-
-		else:
-			# Stand back up
-			is_kneeling = False
-			lcd.lcd("Standing Up")
-			kneel_button.config(text="Kneel")
-			window.update()
-			move_motors({15: 30, 11: -30, 10: 30, 14: -30})
-			stand_up()
-			lcd.clear()
-
-	def handstand():
-		global is_handstand
-
-		if not is_handstand:
-			is_handstand = True
-			lcd.lcd("Handstanding")
-			handstand_button.config(text="Back Down")
-			window.update()
-			move_motors({0: -40, 4: 10, 5: -10, 1: 40})
-			move_motors({15: 85, 11: 0, 10: -0, 14: -85})
-			move_motors({0: 50, 1: -50})
-
-		else:
-			is_handstand = False
-			lcd.lcd("Standing Down")
-			handstand_button.config(text="Handstand")
-			window.update()
-			move_motors({0: -10, 1: 10})
-			move_motors({15: -85, 11: -0, 10: 0, 14: 85, 0: -40, 1: 40})
-			move_motors({0: 40, 4: -10, 5: 10, 1: -40})
-			stand_up()
-			lcd.clear()
-
-	def sit():
-		global is_sitting
-
-		if not is_sitting:
-			# Start sitting
-			is_sitting = True
-			lcd.lcd("Sitting")
-			sit_button.config(text="Stand Up")
-			window.update()
-			move_motors({0: -40, 4: 15, 5: -15, 1: 40})
-			move_motors({15:90, 14:-90, 11:-60, 10:60, 0:10, 1:-10})
-
-		else:
-			# Stand back up
-			is_sitting = False
-			lcd.lcd("Standing Up")
-			sit_button.config(text="Sit")
-			window.update()
-			move_motors({15:-90, 14:90, 11:60, 10:-60, 0:-10, 1:10})
-			move_motors({0: 40, 4: -15, 5: 15, 1: -40})
-			stand_up()
-			lcd.clear()
-
-	def shake():
-		lcd.lcd("Shaking")
-		move_motors({0: -40, 4: 15, 5: -15, 1: 40})
-		move_motors({15:90, 14:-90, 11:-60, 10:60, 0:10, 1:-10})
-		time.sleep(0.5)
-		move_motors({10: 130, 14: -80}, speed_multiplier=25)
-		time.sleep(.75)
-		for _ in range(4):
-			move_motors({14: 40}, speed_multiplier=15)
-			time.sleep(0.15)
-			move_motors({14: -40}, speed_multiplier=15)
-			time.sleep(0.15)
-		time.sleep(.25)
-		move_motors({10: -130, 14: 120}, speed_multiplier=25)
-		move_motors({14: -40}, speed_multiplier=25)
-		move_motors({15:-90, 14:90, 11:60, 10:-60, 0:-10, 1:10})
-		move_motors({0: 40, 4: -15, 5: 15, 1: -40})
-		stand_up()
-		lcd.clear()
-
-	def dance():
-		lcd.lcd("Dancing")
-		for _ in range(4):
-			move_motors({15: -30, 0: -30, 14: 30, 1: 30})
-			move_motors({15: 30, 0: 30, 14: -30, 1: -30})
-		lcd.clear()
-
-	def jump():
-		lcd.lcd("Charging jump")
-		iklegs_move({0:(0,0,0.03),1:(0,0,0.03),2:(0,0,0.03),3:(0,0,0.03)}, step_multiplier=20, speed=0.05)
-		time.sleep(1)
-		lcd.lcd("Jumping")
-		iklegs_move({0:(0,0,-0.03),1:(0,0,-0.03),2:(0,0,-0.03),3:(0,0,-0.03)}, step_multiplier=10, speed=50, delay=0)
-		time.sleep(0.2)
-		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=10, speed=50, delay=0)
-		lcd.clear()
-
-	def show_live_imu():
-		imu_win = tk.Toplevel(window)
-		imu_win.title("Live IMU Data")
-		imu_win.geometry("700x180")
-
-		# Create labels for each sensor
-		lbl_grav = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
-		lbl_gyro = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
-		lbl_mag  = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
-		lbl_lin  = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
-		lbl_quat = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
-		for lbl in (lbl_grav, lbl_gyro, lbl_mag, lbl_lin, lbl_quat):
-			lbl.pack(anchor="w", padx=10, pady=2)
-
-		# Recursive updater
-		def update_imu():
-			# If the window was closed, stop updating
-			if not imu_win.winfo_exists():
-				return
-
-			grav  = get_gravity()
-			gyro  = get_gyroscope()
-			mag   = get_magnetic()
-			lin   = get_linear_acceleration()
-			quat  = get_quaternion()
-
-			lbl_grav.config(text=f"Gravity (unit)     : x:{grav[0]:.2f}, y:{grav[1]:.2f}, z:{grav[2]:.2f}")
-			lbl_gyro.config(text=f"Gyro (degrees/s)   : {gyro}")
-			lbl_mag .config(text=f"Mag (microT)       : {mag}")
-			lbl_lin .config(text=f"Lin Accel          : {lin}")
-			lbl_quat.config(text=f"Quaternion         : {quat}")
-
-			# schedule next update in 100 ms
-			imu_win.after(100, update_imu)
-
-		update_imu()
-
-	def toggle_live_ik():
-		global is_live_ik, prev_roll, prev_pitch
-		if not is_live_ik:
-			is_live_ik = True
-			lcd.lcd("Live IK On")
-			prev_roll, prev_pitch = None, None
-			liveik_button.config(text="Stop Live IK")
-			window.update()
-			live_ik_loop()
-		else:
-			is_live_ik = False
-			lcd.lcd("Live IK Off")
-			time.sleep(0.2)
-			liveik_button.config(text="Start Live IK")
-			lcd.clear()
-			window.update()
-
-	def live_ik_loop():
-		"""Read gravity, compute roll/pitch, map to z-offsets, call IK, re-schedule."""
-		global prev_roll, prev_pitch, is_live_ik
-		half_len = BODY_LEN / 2.0
-		half_wid = BODY_WID / 2.0
-
-		alpha_smooth = 0.07
-		LIVE_IK_GAIN = 5
-		Z_SOFT_LIMIT = 0.04  # 4 cm cap to be kind to IK
-
-		if not is_live_ik:
-			return
-
-		# 1) Read gravity & compute roll/pitch
-		gx, gy, gz = get_gravity()
-		roll  = math.atan2(-gy,       gz)
-		pitch = math.atan2(gx, math.hypot(gy, gz))
-
-		# 2) Smooth
-		if prev_roll is None:
-			roll_f, pitch_f = roll, pitch
-		else:
-			roll_f  = (1 - alpha_smooth) * prev_roll  + alpha_smooth * roll
-			pitch_f = (1 - alpha_smooth) * prev_pitch + alpha_smooth * pitch
-		prev_roll, prev_pitch = roll_f, pitch_f
-
-		# 3) Compute base deltas
-		delta_fb = half_len * math.tan(pitch_f)
-		delta_lr = half_wid * math.tan(roll_f)
-
-		# 4) Apply gain and soft clamp
-		raw = {
-			0: -delta_fb +  delta_lr,
-			1: -delta_fb + -delta_lr,
-			2: +delta_fb +  delta_lr,
-			3: +delta_fb + -delta_lr,
-		}
-		z_off = {}
-		for leg, val in raw.items():
-			v = LIVE_IK_GAIN * val
-			z_off[leg] = max(-Z_SOFT_LIMIT, min(Z_SOFT_LIMIT, v))
-
-		# 5) Call your multi-leg IK move:
-		#    leg_offsets: (dx,dy,dz) in body frame relative to home
-		leg_offsets = {idx: (0.0, 0.0, z_off[idx]) for idx in z_off}
-		iklegs_move(leg_offsets, step_multiplier=1, speed=20, delay=0.0)
-
-		# Loop at ~20 Hz:
-		window.after(50, live_ik_loop)
-
-	def power_off():
-		lcd.lcd("Down")
-		move_motors({15: -40, 0: -40, 14: 40, 1: 40})
-		disable_servos()
-		lcd.clear()
-
-	tk.Button(window, text="Stand Up", command=stand_up).pack()
-	amble_button = tk.Button(window, text="Test amble", command=ambletest)
-	amble_button.pack()
-
-	# Create the walk button with an initial label
-	walk_button = tk.Button(window, text="Start Walking", command=walk)
-	walk_button.pack()
-
-	back_button = tk.Button(window, text="Walk Backward", command=walk_backwards)
-	back_button.pack()
-
-	turn_right_button = tk.Button(window, text="Turn Right", command=turn_right)
-	turn_right_button.pack()
-
-	turn_left_button  = tk.Button(window, text="Turn Left",  command=turn_left)
-	turn_left_button.pack()
-
-	# Create the sit button with an initial label
-	sit_button = tk.Button(window, text="Sit", command=sit)
-	sit_button.pack()
-
-	kneel_button = tk.Button(window, text="Kneel", command=kneel)
-	kneel_button.pack()
-
-	handstand_button = tk.Button(window, text="Handstand", command=handstand)
-	handstand_button.pack()
-
-	tk.Button(window, text="Shake", command=shake).pack()
-	tk.Button(window, text="Dance", command=dance).pack()
-	tk.Button(window, text="Jump", command=jump).pack()
-	tk.Button(window, text="Show Live IMU", command=show_live_imu).pack()
-	liveik_button = tk.Button(window, text="Start Live IK", command=toggle_live_ik)
-	liveik_button.pack()
-	tk.Button(window, text="Lie Down", command=power_off).pack()
-
-	window.mainloop()
-
-# Run the GUI
+    walkspeed = 15
+    global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling, is_handstand, is_amble, is_live_ik, prev_roll, prev_pitch
+    window = tk.Tk()
+    window.title("Robot Control")
+
+    # Prefer full screen (Esc to exit)
+    window.attributes("-fullscreen", True)
+    window.bind("<Escape>", lambda e: window.attributes("-fullscreen", False))
+
+    # Root frame using grid (so hiding uses grid_remove and keeps slot memory)
+    root = tk.Frame(window)
+    root.grid(sticky="nsew")
+    window.rowconfigure(0, weight=1)
+    window.columnconfigure(0, weight=1)
+    root.columnconfigure(0, weight=1)
+
+    # Keep references in creation order (main buttons only)
+    buttons_order = []  # list of (button, row) for MAIN MENU ONLY
+    next_row = [0]      # simple counter in a list to mutate in closure
+    context_buttons = []  # sit-context buttons kept separately
+
+    def make_button(text, command, *, include_in_show_all=True):
+        r = next_row[0]
+        next_row[0] += 1
+        b = tk.Button(root, text=text, command=command)
+        b.grid(row=r, column=0, sticky="ew", padx=12, pady=6)
+        if include_in_show_all:
+            buttons_order.append((b, r))
+        else:
+            context_buttons.append((b, r))
+        return b
+
+    # Helpers
+    def hide_all_main():
+        for b, _ in buttons_order:
+            if b.winfo_ismapped():
+                b.grid_remove()
+
+    def hide_all_context():
+        for b, _ in context_buttons:
+            if b.winfo_ismapped():
+                b.grid_remove()
+
+    def show_all():
+        """Restore the main menu only (never shows context buttons)."""
+        for b, _ in buttons_order:
+            if not b.winfo_ismapped():
+                b.grid()
+        # explicitly keep context buttons hidden
+        hide_all_context()
+        window.update_idletasks()
+
+    def show_only(*widgets):
+        """Hide everything, then show only the provided widgets."""
+        hide_all_main()
+        hide_all_context()
+        for w in widgets:
+            if not w.winfo_ismapped():
+                w.grid()
+        window.update_idletasks()
+
+    def hide_others(active_btn):
+        """Legacy helper used by movement toggles: hide all except active_btn."""
+        for b, _ in buttons_order:
+            if b is not active_btn and b.winfo_ismapped():
+                b.grid_remove()
+        # context buttons also off in these modes
+        hide_all_context()
+        window.update_idletasks()
+
+    # ------------------- Callbacks -------------------
+    def ambletest():
+        global is_amble
+        if not is_amble:
+            is_amble = True
+            lcd.lcd("Ambling")
+            amble_button.config(text="Stop Ambling")
+            window.update()
+            hide_others(amble_button)
+            testingloop()
+        else:
+            is_amble = False
+            lcd.lcd("Reseting to     Normal")
+            iklegs_move({0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)})
+            lcd.clear()
+            amble_button.config(text="Test Amble")
+            show_all()
+            window.update()
+
+    def testingloop():
+        if not is_amble:
+            return
+        n=0.3
+        h=6
+        d=6
+        iklegs_move({0:(-0.03+0.04,0,0.01*h), 1:(-0.01+0.04,0,0), 2:(-0.03,0,0), 3:(-0.05,0,0)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        iklegs_move({0:(0+0.04,0,0.01*h/2),      1:(-0.02+0.04,0,0), 2:(-0.04,0,0), 3:(-0.06,0,0)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        iklegs_move({0:(-0.01+0.04,0,0), 1:(-0.03+0.04,0,0), 2:(-0.05,0,0), 3:(-0.03,0,0.01*h)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        iklegs_move({0:(-0.02+0.04,0,0), 1:(-0.04+0.04,0,0), 2:(-0.06,0,0), 3:(0,0,0.01*h/2)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        iklegs_move({0:(-0.03+0.04,0,0), 1:(-0.05+0.04,0,0), 2:(-0.03,0,0.01*h), 3:(-0.01,0,0)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        iklegs_move({0:(-0.04+0.04,0,0), 1:(-0.06+0.04,0,0), 2:(0,0,0.01*h/2),    3:(-0.02,0,0)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        iklegs_move({0:(-0.05+0.04,0,0), 1:(-0.03+0.04,0,0.01*h), 2:(-0.01,0,0), 3:(-0.03,0,0)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        iklegs_move({0:(-0.06+0.04,0,0), 1:(0+0.04,0,0.01*h/2),     2:(-0.02,0,0), 3:(-0.04,0,0)}, step_multiplier=20, delay=0.1)
+        time.sleep(n)
+        window.after(0, testingloop)
+
+    def walk():
+        global is_walking, is_walking_backward
+        is_walking_backward = False
+        if not is_walking:
+            is_walking = True
+            lcd.lcd("Walking")
+            walk_button.config(text="Stop Walking")
+            window.update()
+            hide_others(walk_button)
+            move_motors({10: -20, 4: 20, 1: 35, 15: -35}, speed_multiplier=walkspeed)
+            move_motors({11: -20, 5: 20, 1: -35, 15: 35}, speed_multiplier=walkspeed)
+            walking_loop()
+        else:
+            is_walking = False
+            lcd.lcd("Reseting to     Normal")
+            move_motors({11: 20, 5: -20, 0: -35, 14: 35}, speed_multiplier=walkspeed)
+            move_motors({10: 20, 4: -20, 0: 35, 14: -35}, speed_multiplier=walkspeed)
+            lcd.clear()
+            walk_button.config(text="Start Walking")
+            show_all()
+            window.update()
+
+    def walking_loop():
+        if not is_walking:
+            return
+        lcd.lcd("Walking 1/4")
+        move_motors({11: 40, 5: -40, 0: -30, 14: 30}, speed_multiplier=walkspeed)
+        lcd.lcd("Walking 2/4")
+        move_motors({10: 40, 4: -40, 0: 30, 14: -30}, speed_multiplier=walkspeed)
+        lcd.lcd("Walking 3/4")
+        move_motors({10: -40, 4: 40, 1: 30, 15: -30}, speed_multiplier=walkspeed)
+        lcd.lcd("Walking 4/4")
+        move_motors({11: -40, 5: 40, 1: -30, 15: 30}, speed_multiplier=walkspeed)
+        window.after(0, walking_loop)
+
+    def walk_backwards():
+        global is_walking, is_walking_backward
+        is_walking = False
+        if not is_walking_backward:
+            is_walking_backward = True
+            lcd.lcd("Backwards")
+            back_button.config(text="Stop Backwards")
+            window.update()
+            hide_others(back_button)
+            move_motors({10: -20, 4: 20, 1: 35, 15: -35}, speed_multiplier=walkspeed)
+            move_motors({11: -20, 5: 20, 1: -35, 15: 35}, speed_multiplier=walkspeed)
+            walking_loop_backwards()
+        else:
+            is_walking_backward = False
+            lcd.lcd("Reseting to     Normal")
+            move_motors({11: 20, 5: -20, 1: 35, 15: -35}, speed_multiplier=walkspeed)
+            move_motors({10: 20, 4: -20, 1: -35, 15: 35}, speed_multiplier=walkspeed)
+            lcd.clear()
+            back_button.config(text="Walk Backward")
+            show_all()
+            window.update()
+
+    def walking_loop_backwards():
+        if not is_walking_backward:
+            return
+        lcd.lcd("Back 1/4")
+        move_motors({11:40, 5:-40, 15:-30, 1:30}, speed_multiplier=walkspeed)
+        lcd.lcd("Back 2/4")
+        move_motors({10: 40,  4:-40,15:30, 1:-30}, speed_multiplier=walkspeed)
+        lcd.lcd("Back 3/4")
+        move_motors({10: -40, 4:40, 0:-30, 14: 30}, speed_multiplier=walkspeed)
+        lcd.lcd("Back 4/4")
+        move_motors({11:-40, 5:40, 0:30,  14: -30}, speed_multiplier=walkspeed)
+        window.after(0, walking_loop_backwards)
+
+    def turn_left():
+        global is_turning_left, is_turning_right, is_walking
+        is_turning_right = False
+        turn_right_button.config(text="Turn Right")
+        is_walking = False
+        walk_button.config(text="Start Walking")
+        scale_map = lambda ch, v: v * (TURN_SCALE if ch in LEFT_CHANNELS else 1.0)
+        if not is_turning_left:
+            is_turning_left = True
+            lcd.lcd("Turning Left")
+            turn_left_button.config(text="Stop Left")
+            window.update()
+            hide_others(turn_left_button)
+            pre1 = { ch: scale_map(ch, v) for ch, v in {10:-20, 4:20, 1:35, 15:-35}.items() }
+            pre2 = { ch: scale_map(ch, v) for ch, v in {11:-20, 5:20, 1:-35, 15:35}.items() }
+            move_motors(pre1, speed_multiplier=15)
+            move_motors(pre2, speed_multiplier=15)
+            turning_left_loop()
+        else:
+            is_turning_left = False
+            lcd.lcd("Resetting")
+            turn_left_button.config(text="Turn Left")
+            window.update()
+            post1 = { ch: scale_map(ch, v) for ch, v in {11:20, 5:-20, 0:-35, 14:35}.items() }
+            post2 = { ch: scale_map(ch, v) for ch, v in {10:20, 4:-20, 0:35, 14:-35}.items() }
+            move_motors(post1, speed_multiplier=15)
+            move_motors(post2, speed_multiplier=15)
+            lcd.clear()
+            show_all()
+
+    def turning_left_loop():
+        if not is_turning_left:
+            return
+        L, R = TURN_SCALE, 1.0
+        lcd.lcd("Turning Left 1/4")
+        move_motors({11:  40*L, 5: -40*R,  0: -30*L, 14:  30*R}, speed_multiplier=15)
+        lcd.lcd("Turning Left 2/4")
+        move_motors({10:  40*R, 4: -40*L,  0:  30*L, 14: -30*R}, speed_multiplier=15)
+        lcd.lcd("Turning Left 3/4")
+        move_motors({10: -40*R, 4:  40*L,  1:  30*R, 15: -30*L}, speed_multiplier=15)
+        lcd.lcd("Turning Left 4/4")
+        move_motors({11: -40*L, 5:  40*R,  1: -30*R, 15:  30*L}, speed_multiplier=15)
+        window.after(0, turning_left_loop)
+
+    def turn_right():
+        global is_turning_left, is_turning_right, is_walking
+        is_turning_left = False
+        turn_left_button.config(text="Turn Left")
+        is_walking = False
+        walk_button.config(text="Start Walking")
+        scale_map = lambda ch, v: v * (TURN_SCALE if ch in RIGHT_CHANNELS else 1.0)
+        if not is_turning_right:
+            is_turning_right = True
+            lcd.lcd("Turning Right")
+            turn_right_button.config(text="Stop Right")
+            window.update()
+            hide_others(turn_right_button)
+            pre1 = { ch: scale_map(ch, v) for ch, v in {10:-20, 4:20, 1:35, 15:-35}.items() }
+            pre2 = { ch: scale_map(ch, v) for ch, v in {11:-20, 5:20, 1:-35, 15:35}.items() }
+            move_motors(pre1, speed_multiplier=15)
+            move_motors(pre2, speed_multiplier=15)
+            turning_right_loop()
+        else:
+            is_turning_right = False
+            lcd.lcd("Resetting")
+            turn_right_button.config(text="Turn Right")
+            window.update()
+            post1 = { ch: scale_map(ch, v) for ch, v in {11:20, 5:-20, 0:-35, 14:35}.items() }
+            post2 = { ch: scale_map(ch, v) for ch, v in {10:20, 4:-20, 0:35, 14:-35}.items() }
+            move_motors(post1, speed_multiplier=15)
+            move_motors(post2, speed_multiplier=15)
+            lcd.clear()
+            show_all()
+
+    def turning_right_loop():
+        if not is_turning_right:
+            return
+        R, L = TURN_SCALE, 1.0
+        lcd.lcd("Turning Right 1/4")
+        move_motors({11:  40*L, 5: -40*R,  0: -30*L, 14:  30*R}, speed_multiplier=15)
+        lcd.lcd("Turning Right 2/4")
+        move_motors({10:  40*R, 4: -40*L,  0:  30*L, 14: -30*R}, speed_multiplier=15)
+        lcd.lcd("Turning Right 3/4")
+        move_motors({10: -40*R, 4:  40*L,  1:  30*R, 15: -30*L}, speed_multiplier=15)
+        lcd.lcd("Turning Right 4/4")
+        move_motors({11: -40*L, 5:  40*R,  1: -30*R, 15:  30*L}, speed_multiplier=15)
+        window.after(0, turning_right_loop)
+
+    def kneel():
+        global is_kneeling
+        if not is_kneeling:
+            is_kneeling = True
+            lcd.lcd("Kneeling")
+            kneel_button.config(text="Unkneel")
+            window.update()
+            hide_others(kneel_button)
+            move_motors({15: -30, 11: 30, 10: -30, 14: 30})
+        else:
+            is_kneeling = False
+            lcd.lcd("Standing Up")
+            kneel_button.config(text="Kneel")
+            window.update()
+            move_motors({15: 30, 11: -30, 10: 30, 14: -30})
+            stand_up()
+            lcd.clear()
+            show_all()
+
+    def handstand():
+        global is_handstand
+        if not is_handstand:
+            is_handstand = True
+            lcd.lcd("Handstanding")
+            handstand_button.config(text="Back Down")
+            window.update()
+            hide_others(handstand_button)
+            move_motors({0: -40, 4: 10, 5: -10, 1: 40})
+            move_motors({15: 85, 11: 0, 10: -0, 14: -85})
+            move_motors({0: 50, 1: -50})
+        else:
+            is_handstand = False
+            lcd.lcd("Standing Down")
+            handstand_button.config(text="Handstand")
+            window.update()
+            move_motors({0: -10, 1: 10})
+            move_motors({15: -85, 11: -0, 10: 0, 14: 85, 0: -40, 1: 40})
+            move_motors({0: 40, 4: -10, 5: 10, 1: -40})
+            stand_up()
+            lcd.clear()
+            show_all()
+
+    # ---- Sit context: Shake + Unsit ----
+    def arm_shake():
+        move_motors({10: 130, 14: -80}, speed_multiplier=25)
+        for _ in range(4):
+            move_motors({14: 40}, speed_multiplier=15)
+            time.sleep(.15)
+            move_motors({14: -40}, speed_multiplier=15)
+            time.sleep(.15)
+        move_motors({10: -130, 14: 120}, speed_multiplier=25)
+        move_motors({14: -40}, speed_multiplier=25)
+        # keep sit-context visible after shaking
+        show_only(shake_arm_button, unsit_button)
+
+    def unsit():
+        global is_sitting
+        if is_sitting:
+            is_sitting = False
+            lcd.lcd("Standing Up")
+            move_motors({15:-90, 14:90, 11:60, 10:-60, 0:-10, 1:10})
+            move_motors({0: 40, 4: -15, 5: 15, 1: -40})
+            stand_up()
+            lcd.clear()
+            show_all()
+
+    def sit():
+        global is_sitting
+        if not is_sitting:
+            is_sitting = True
+            lcd.lcd("Sitting")
+            sit_button.config(text="Sit")  # label stays as Sit
+            window.update()
+            # take the sitting pose
+            move_motors({0: -40, 4: 15, 5: -15, 1: 40})
+            move_motors({15:90, 14:-90, 11:-60, 10:60, 0:10, 1:-10})
+            # show ONLY the two context buttons (Sit itself is hidden)
+            show_only(shake_arm_button, unsit_button)
+        else:
+            # already sitting → just ensure the context view is active
+            show_only(shake_arm_button, unsit_button)
+
+    def dance():
+        lcd.lcd("Dancing")
+        for _ in range(4):
+            move_motors({15: -30, 0: -30, 14: 30, 1: 30})
+            move_motors({15: 30, 0: 30, 14: -30, 1: -30})
+        lcd.clear()
+
+    def jump():
+        lcd.lcd("Charging jump")
+        iklegs_move({0:(0,0,0.03),1:(0,0,0.03),2:(0,0,0.03),3:(0,0,0.03)}, step_multiplier=20, speed=0.05)
+        time.sleep(1)
+        lcd.lcd("Jumping")
+        iklegs_move({0:(0,0,-0.03),1:(0,0,-0.03),2:(0,0,-0.03),3:(0,0,-0.03)}, step_multiplier=10, speed=50, delay=0)
+        time.sleep(0.2)
+        iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=10, speed=50, delay=0)
+        lcd.clear()
+
+    def show_live_imu():
+        imu_win = tk.Toplevel(window)
+        imu_win.title("Live IMU Data")
+        imu_win.geometry("700x180")
+        lbl_grav = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+        lbl_gyro = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+        lbl_mag  = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+        lbl_lin  = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+        lbl_quat = tk.Label(imu_win, text="", justify="left", font=("Courier", 10))
+        for lbl in (lbl_grav, lbl_gyro, lbl_mag, lbl_lin, lbl_quat):
+            lbl.pack(anchor="w", padx=10, pady=2)
+        def update_imu():
+            if not imu_win.winfo_exists():
+                return
+            grav  = get_gravity()
+            gyro  = get_gyroscope()
+            mag   = get_magnetic()
+            lin   = get_linear_acceleration()
+            quat  = get_quaternion()
+            lbl_grav.config(text=f"Gravity (unit)     : x:{grav[0]:.2f}, y:{grav[1]:.2f}, z:{grav[2]:.2f}")
+            lbl_gyro.config(text=f"Gyro (degrees/s)   : {gyro}")
+            lbl_mag .config(text=f"Mag (microT)       : {mag}")
+            lbl_lin .config(text=f"Lin Accel          : {lin}")
+            lbl_quat.config(text=f"Quaternion         : {quat}")
+            imu_win.after(100, update_imu)
+        update_imu()
+
+    def toggle_live_ik():
+        global is_live_ik, prev_roll, prev_pitch
+        if not is_live_ik:
+            is_live_ik = True
+            lcd.lcd("Live IK On")
+            prev_roll, prev_pitch = None, None
+            liveik_button.config(text="Stop Live IK")
+            window.update()
+            hide_others(liveik_button)
+            live_ik_loop()
+        else:
+            is_live_ik = False
+            lcd.lcd("Live IK Off")
+            time.sleep(0.2)
+            liveik_button.config(text="Start Live IK")
+            lcd.clear()
+            show_all()
+            window.update()
+
+    def live_ik_loop():
+        global prev_roll, prev_pitch, is_live_ik
+        half_len = BODY_LEN / 2.0
+        half_wid = BODY_WID / 2.0
+        alpha_smooth = 0.07
+        LIVE_IK_GAIN = 5
+        Z_SOFT_LIMIT = 0.04
+        if not is_live_ik:
+            return
+        gx, gy, gz = get_gravity()
+        roll  = math.atan2(-gy,       gz)
+        pitch = math.atan2(gx, math.hypot(gy, gz))
+        if prev_roll is None:
+            roll_f, pitch_f = roll, pitch
+        else:
+            roll_f  = (1 - alpha_smooth) * prev_roll  + alpha_smooth * roll
+            pitch_f = (1 - alpha_smooth) * prev_pitch + alpha_smooth * pitch
+        prev_roll, prev_pitch = roll_f, pitch_f
+        delta_fb = half_len * math.tan(pitch_f)
+        delta_lr = half_wid * math.tan(roll_f)
+        raw = {
+            0: -delta_fb +  delta_lr,
+            1: -delta_fb + -delta_lr,
+            2: +delta_fb +  delta_lr,
+            3: +delta_fb + -delta_lr,
+        }
+        z_off = {}
+        for leg, val in raw.items():
+            v = LIVE_IK_GAIN * val
+            z_off[leg] = max(-Z_SOFT_LIMIT, min(Z_SOFT_LIMIT, v))
+        leg_offsets = {idx: (0.0, 0.0, z_off[idx]) for idx in z_off}
+        iklegs_move(leg_offsets, step_multiplier=1, speed=20, delay=0.0)
+        window.after(50, live_ik_loop)
+
+    def power_off():
+        lcd.lcd("Down")
+        move_motors({15: -40, 0: -40, 14: 40, 1: 40})
+        disable_servos()
+        lcd.clear()
+
+    # --- Buttons (auto-row) -------------------------------------------------
+    stand_button       = make_button("Stand Up", stand_up)
+    amble_button       = make_button("Test amble", ambletest)
+    walk_button        = make_button("Start Walking", walk)
+    back_button        = make_button("Walk Backward", walk_backwards)
+    turn_right_button  = make_button("Turn Right", turn_right)
+    turn_left_button   = make_button("Turn Left",  turn_left)
+    sit_button         = make_button("Sit", sit)
+    kneel_button       = make_button("Kneel", kneel)
+    handstand_button   = make_button("Handstand", handstand)
+    # (Removed standalone Shake button)
+    dance_button       = make_button("Dance", dance)
+    jump_button        = make_button("Jump", jump)
+    imulive_button     = make_button("Show Live IMU", show_live_imu)
+    liveik_button      = make_button("Start Live IK", toggle_live_ik)
+
+    # Sit-context buttons (NOT part of main menu; exclude from show_all)
+    shake_arm_button   = make_button("Shake", arm_shake, include_in_show_all=False)
+    unsit_button       = make_button("Unsit", unsit, include_in_show_all=False)
+
+    lie_button         = make_button("Lie Down", power_off)
+    # -----------------------------------------------------------------------
+
+    # Hide the Sit-context buttons by default (context-only)
+    hide_all_context()
+
+    window.mainloop()
+
+
+
 create_gui()
