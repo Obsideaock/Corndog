@@ -530,19 +530,27 @@ def create_gui():
     root.columnconfigure(0, weight=1)
 
     # Keep references in creation order (main buttons only)
-    buttons_order = []  # list of (button, row) for MAIN MENU ONLY
-    next_row = [0]      # simple counter in a list to mutate in closure
-    context_buttons = []  # sit-context buttons kept separately
+    buttons_order = []         # list of (button, row) for MAIN MENU ONLY
+    next_row = [0]             # simple counter in a list to mutate in closure
+
+    # Context-only buttons: create but DO NOT grid initially
+    context_buttons = []       # just the widget list
+    context_pos = {}           # widget -> row (so we can grid later with the right geometry)
 
     def make_button(text, command, *, include_in_show_all=True):
+        """Create a button. If include_in_show_all is False, do NOT grid it now (no initial flash)."""
         r = next_row[0]
         next_row[0] += 1
         b = tk.Button(root, text=text, command=command)
-        b.grid(row=r, column=0, sticky="ew", padx=12, pady=6)
+
         if include_in_show_all:
+            # main menu button: grid now
+            b.grid(row=r, column=0, sticky="ew", padx=12, pady=6)
             buttons_order.append((b, r))
         else:
-            context_buttons.append((b, r))
+            # context-only: don't grid yet; store intended row
+            context_buttons.append(b)
+            context_pos[b] = r
         return b
 
     # Helpers
@@ -552,9 +560,14 @@ def create_gui():
                 b.grid_remove()
 
     def hide_all_context():
-        for b, _ in context_buttons:
+        for b in context_buttons:
             if b.winfo_ismapped():
                 b.grid_remove()
+
+    def _grid_context_button(b):
+        """Place a context button using its stored row + layout."""
+        r = context_pos.get(b, 0)
+        b.grid(row=r, column=0, sticky="ew", padx=12, pady=6)
 
     def show_all():
         """Restore the main menu only (never shows context buttons)."""
@@ -570,8 +583,12 @@ def create_gui():
         hide_all_main()
         hide_all_context()
         for w in widgets:
-            if not w.winfo_ismapped():
-                w.grid()
+            # If it's a context button (never gridded before), grid with stored row/opts
+            if w in context_pos:
+                _grid_context_button(w)
+            else:
+                if not w.winfo_ismapped():
+                    w.grid()
         window.update_idletasks()
 
     def hide_others(active_btn):
@@ -969,6 +986,40 @@ def create_gui():
         disable_servos()
         lcd.clear()
 
+    # ---------------- Companion flow (single-button stages) -----------------
+    def companion_start():
+        """Main-menu button action → then show single 'Companion 2' button."""
+        lcd.lcd("Companion: Hi!")
+        # tiny friendly nod
+        move_motors({0:-10, 1:10}, speed_multiplier=20)
+        move_motors({0:10,  1:-10}, speed_multiplier=20)
+        # prepare stage button
+        companion_flow_button.config(text="Companion 2", command=companion_stage2)
+        show_only(companion_flow_button)
+
+    def companion_stage2():
+        """Second stage → gentle side sway."""
+        lcd.lcd("Companion: Sway")
+        iklegs_move({0:(0.02,0,0),1:(0.02,0,0),2:(-0.02,0,0),3:(-0.02,0,0)}, step_multiplier=15, speed=10, delay=0.01)
+        iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=15, speed=10, delay=0.01)
+        companion_flow_button.config(text="Companion 3", command=companion_stage3)
+        show_only(companion_flow_button)
+
+    def companion_stage3():
+        """Third stage → quick happy tap."""
+        lcd.lcd("Companion: Tap")
+        move_motors({14: 25}, speed_multiplier=25)
+        move_motors({14:-25}, speed_multiplier=25)
+        companion_flow_button.config(text="Reset", command=companion_reset)
+        show_only(companion_flow_button)
+
+    def companion_reset():
+        """Reset action → return to main menu."""
+        lcd.lcd("Companion: Reset")
+        stand_up()
+        lcd.clear()
+        show_all()
+
     # --- Buttons (auto-row) -------------------------------------------------
     stand_button       = make_button("Stand Up", stand_up)
     amble_button       = make_button("Test amble", ambletest)
@@ -979,24 +1030,27 @@ def create_gui():
     sit_button         = make_button("Sit", sit)
     kneel_button       = make_button("Kneel", kneel)
     handstand_button   = make_button("Handstand", handstand)
-    # (Removed standalone Shake button)
     dance_button       = make_button("Dance", dance)
     jump_button        = make_button("Jump", jump)
     imulive_button     = make_button("Show Live IMU", show_live_imu)
     liveik_button      = make_button("Start Live IK", toggle_live_ik)
 
+    # New: Companion main-menu button
+    companion_button   = make_button("Companion", companion_start)
+
     # Sit-context buttons (NOT part of main menu; exclude from show_all)
     shake_arm_button   = make_button("Shake", arm_shake, include_in_show_all=False)
     unsit_button       = make_button("Unsit", unsit, include_in_show_all=False)
 
+    # New: the single stage button used for Companion 2 → 3 → Reset
+    companion_flow_button = make_button("Companion 2", companion_stage2, include_in_show_all=False)
+
     lie_button         = make_button("Lie Down", power_off)
     # -----------------------------------------------------------------------
 
-    # Hide the Sit-context buttons by default (context-only)
+    # Ensure context buttons start hidden (they were never gridded, but this is harmless)
     hide_all_context()
 
     window.mainloop()
-
-
 
 create_gui()
