@@ -1003,14 +1003,26 @@ def create_gui():
 		time.sleep(0.1)
 		move_motors({0:-10})
 		companion_flow_button.config(text="Companion 3", command=companion_stage3)
-		show_only(companion_flow_button)
+		# Show BOTH: the normal next-stage button and the new Shake button
+		show_only(companion_flow_button, compan_shake_button)
 		
 	def compan_shake():
 		lcd.lcd("Companion: Shake")
 		move_motors({9:-35})
 		time.sleep(0.1)
-		move_motors({11:60})
-		#need to write the other button stuff
+		move_motors({11:-100})
+		time.sleep(0.2)
+		for _ in range(3):
+			move_motors({15: -40}, speed_multiplier=15)
+			time.sleep(.15)
+			move_motors({15: 40}, speed_multiplier=15)
+			time.sleep(.15)
+		time.sleep(0.2)
+		move_motors({11:100})
+		time.sleep(0.1)
+		move_motors({9:35})
+		# keep the companion-stage context visible after shaking
+		show_only(companion_flow_button, compan_shake_button)
 
 	def companion_stage3():
 		"""Third stage → quick happy tap."""
@@ -1022,7 +1034,7 @@ def create_gui():
 	def companion_reset():
 		"""Reset action → return to main menu."""
 		lcd.lcd("Companion: Reset")
-		stand_up()
+		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=15, speed=10, delay=0.01)
 		lcd.clear()
 		show_all()
 
@@ -1040,6 +1052,20 @@ def create_gui():
 	jump_button        = make_button("Jump", jump)
 	imulive_button     = make_button("Show Live IMU", show_live_imu)
 	liveik_button      = make_button("Start Live IK", toggle_live_ik)
+	# New: Companion main-menu button
+	companion_button   = make_button("Companion", companion_start)
+
+	# Sit-context buttons (NOT part of main menu; exclude from show_all)
+	shake_arm_button   = make_button("Shake", arm_shake, include_in_show_all=False)
+	unsit_button       = make_button("Unsit", unsit, include_in_show_all=False)
+
+	# New: the single stage button used for Companion 2 → 3 → Reset
+	companion_flow_button = make_button("Companion 2", companion_stage2, include_in_show_all=False)
+
+	# NEW: Companion flow “Shake” button shown after Stage 2
+	compan_shake_button = make_button("Shake", compan_shake, include_in_show_all=False)
+
+	lie_button         = make_button("Lie Down", power_off)
 
 	# New: Companion main-menu button
 	companion_button   = make_button("Companion", companion_start)
