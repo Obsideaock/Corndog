@@ -1,7 +1,7 @@
-#MoveLib.py
 import time
 import math
 import numpy as np
+import threading
 import board
 import busio
 from adafruit_pca9685 import PCA9685
@@ -17,6 +17,10 @@ from spot_micro_kinematics.utilities.spot_micro_kinematics import (
 import sys
 sys.path.insert(0, '/home/Corndog')
 from lcd import lcd_library as lcd
+
+# --- Gait engine import (do not modify gait_engine_app.py) ---
+from gait_engine_app import GaitEngine
+
 
 # ——— Hardware setup ———
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -159,110 +163,6 @@ def dance():
         move_motors({15:30, 0:30, 14:-30, 1:-30})
     lcd.clear()
 
-# ——— Walking primitives ———
-WALK_SPEED = 15
-def walk_init(speed=WALK_SPEED):
-    move_motors({10:-20,4:20,1:35,15:-35}, speed_multiplier=speed)
-    move_motors({11:-20,5:20,1:-35,15:35}, speed_multiplier=speed)
-
-def walk_cycle(speed=WALK_SPEED):
-    move_motors({11:40,5:-40,0:-30,14:30}, speed_multiplier=speed)
-    move_motors({10:40,4:-40,0:30,14:-30}, speed_multiplier=speed)
-    move_motors({10:-40,4:40,1:30,15:-30}, speed_multiplier=speed)
-    move_motors({11:-40,5:40,1:-30,15:30}, speed_multiplier=speed)
-
-def walk_reset(speed=WALK_SPEED):
-    move_motors({11:20,5:-20,0:-35,14:35}, speed_multiplier=speed)
-    move_motors({10:20,4:-20,0:35,14:-35}, speed_multiplier=speed)
-
-# ——— Turn in place ———
-# scale factors for turning
-TURN_SCALE    = 0.2
-LEFT_CHANNELS = {15, 11, 0, 4}
-RIGHT_CHANNELS= {14, 10, 1, 5}
-# state flags
-is_turning_left  = False
-is_turning_right = False
-
-def turn_left(speed=WALK_SPEED):
-    """Start/stop a left-spin gait."""
-    global is_turning_left, is_turning_right
-    # ensure not also turning right
-    is_turning_right = False
-
-    scale_map = lambda ch, v: v * (TURN_SCALE if ch in LEFT_CHANNELS else 1.0)
-
-    if not is_turning_left:
-        is_turning_left = True
-        lcd.lcd("Turning Left")
-        # prep moves
-        pre1 = {ch: scale_map(ch, v) for ch, v in {10:-20,4:20,1:35,15:-35}.items()}
-        pre2 = {ch: scale_map(ch, v) for ch, v in {11:-20,5:20,1:-35,15:35}.items()}
-        move_motors(pre1, speed_multiplier=speed)
-        move_motors(pre2, speed_multiplier=speed)
-        turning_left_loop(speed)
-    else:
-        is_turning_left = False
-        lcd.lcd("Resetting")
-        # return moves
-        post1 = {ch: scale_map(ch, v) for ch, v in {11:20,5:-20,0:-35,14:35}.items()}
-        post2 = {ch: scale_map(ch, v) for ch, v in {10:20,4:-20,0:35,14:-35}.items()}
-        move_motors(post1, speed_multiplier=speed)
-        move_motors(post2, speed_multiplier=speed)
-        lcd.clear()
-
-def turning_left_loop(speed):
-    if not is_turning_left:
-        return
-    L, R = TURN_SCALE, 1.0
-    lcd.lcd("TL 1/4")
-    move_motors({11:40*L, 5:-40*R, 0:-30*L,14:30*R}, speed_multiplier=speed)
-    lcd.lcd("TL 2/4")
-    move_motors({10:40*R, 4:-40*L, 0:30*L,14:-30*R}, speed_multiplier=speed)
-    lcd.lcd("TL 3/4")
-    move_motors({10:-40*R,4:40*L, 1:30*R,15:-30*L}, speed_multiplier=speed)
-    lcd.lcd("TL 4/4")
-    move_motors({11:-40*L,5:40*R, 1:-30*R,15:30*L}, speed_multiplier=speed)
-    # re-invoke
-    turning_left_loop(speed)
-
-def turn_right(speed=WALK_SPEED):
-    """Start/stop a right-spin gait."""
-    global is_turning_left, is_turning_right
-    is_turning_left = False
-
-    scale_map = lambda ch, v: v * (TURN_SCALE if ch in RIGHT_CHANNELS else 1.0)
-
-    if not is_turning_right:
-        is_turning_right = True
-        lcd.lcd("Turning Right")
-        pre1 = {ch: scale_map(ch, v) for ch, v in {10:-20,4:20,1:35,15:-35}.items()}
-        pre2 = {ch: scale_map(ch, v) for ch, v in {11:-20,5:20,1:-35,15:35}.items()}
-        move_motors(pre1, speed_multiplier=speed)
-        move_motors(pre2, speed_multiplier=speed)
-        turning_right_loop(speed)
-    else:
-        is_turning_right = False
-        lcd.lcd("Resetting")
-        post1 = {ch: scale_map(ch, v) for ch, v in {11:20,5:-20,0:-35,14:35}.items()}
-        post2 = {ch: scale_map(ch, v) for ch, v in {10:20,4:-20,0:35,14:-35}.items()}
-        move_motors(post1, speed_multiplier=speed)
-        move_motors(post2, speed_multiplier=speed)
-        lcd.clear()
-
-def turning_right_loop(speed):
-    if not is_turning_right:
-        return
-    R, L = TURN_SCALE, 1.0
-    lcd.lcd("TR 1/4")
-    move_motors({11:40*L,5:-40*R, 0:-30*L,14:30*R}, speed_multiplier=speed)
-    lcd.lcd("TR 2/4")
-    move_motors({10:40*R,4:-40*L, 0:30*L,14:-30*R}, speed_multiplier=speed)
-    lcd.lcd("TR 3/4")
-    move_motors({10:-40*R,4:40*L, 1:30*R,15:-30*L}, speed_multiplier=speed)
-    lcd.lcd("TR 4/4")
-    move_motors({11:-40*L,5:40*R, 1:-30*R,15:30*L}, speed_multiplier=speed)
-    turning_right_loop(speed)
 
 # ——— Inverse-kinematics utilities ———
 BODY_LEN, BODY_WID = 0.186, 0.078
@@ -331,3 +231,239 @@ def move_single_leg(leg_idx, x, y, z, safety=False, speed=10):
         print(f"Leg {leg_idx} → {cmds}")
     else:
         move_motors(cmds, speed_multiplier=speed)
+
+
+# =============================================================================
+#   GAIT ENGINE INTEGRATION  (replaces ONLY the hand-scripted gait system)
+# =============================================================================
+
+# Simple IMU stub: keep gait engine happy (no tilt compensation).
+def get_gravity():
+    # gx, gy, gz in g-units; default "upright"
+    return (0.0, 0.0, 1.0)
+
+# Home foot positions in each leg's IK "hip frame" (meters).
+# These are reasonable defaults; gait_engine_app provides only *offsets* from home.
+_GAIT_HOME_FOOT = {
+    0: ( 0.060,  0.050, -0.160),  # FL
+    1: ( 0.060, -0.050, -0.160),  # FR
+    2: (-0.060,  0.050, -0.160),  # RL
+    3: (-0.060, -0.050, -0.160),  # RR
+}
+
+def iklegs_move(leg_offsets, step_multiplier=1, speed=25, delay=0.0):
+    """
+    Adapter required by gait_engine_app.py.
+
+    leg_offsets: {leg_idx: (dx, dy, dz)} meters, applied to each leg's home foot position.
+    step_multiplier: larger => smoother/slower (we reduce speed_multiplier accordingly)
+    speed: passed through to move_motors speed_multiplier (after scaling)
+    delay: per-step delay passed to move_motors
+    """
+    cmds = {}
+
+    for leg in (0, 1, 2, 3):
+        dx, dy, dz = leg_offsets.get(leg, (0.0, 0.0, 0.0))
+        hx, hy, hz = _GAIT_HOME_FOOT[leg]
+        x = hx + float(dx)
+        y = hy + float(dy)
+        z = hz + float(dz)
+
+        q1, q2, q3 = single_leg_ik_hip_frame(leg, x, y, z)
+        uangs = to_user_angles(leg, (q1, q2, q3))
+
+        for j, ua in enumerate(uangs, start=1):
+            ch = SERVO_MAP[(leg, j)]
+            curr = servo_angles.get(ch, SERVO_HOME[ch])
+            cmds[ch] = ua - curr
+
+    # Interpret step_multiplier as "more smoothing": lower effective speed => more internal steps
+    sm = max(1, int(step_multiplier))
+    eff_speed = max(0.5, float(speed) / sm)
+
+    if cmds:
+        move_motors(cmds, delay=float(delay), speed_multiplier=eff_speed)
+
+class _AfterScheduler:
+    """
+    Minimal scheduler with the subset of Tk API that GaitEngine uses:
+      - after(ms, callback) -> id
+      - after_cancel(id)
+      - winfo_exists()
+    Implemented with threading.Timer so we can run without Tk mainloop.
+    """
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._timers = {}
+        self._next_id = 1
+        self._alive = True
+
+    def after(self, ms, callback):
+        with self._lock:
+            if not self._alive:
+                return "0"
+            tid = str(self._next_id)
+            self._next_id += 1
+
+        def _wrapped():
+            # Remove handle before running (matches typical after semantics)
+            with self._lock:
+                self._timers.pop(tid, None)
+            try:
+                callback()
+            except Exception:
+                pass
+
+        t = threading.Timer(ms / 1000.0, _wrapped)
+        t.daemon = True
+        with self._lock:
+            self._timers[tid] = t
+        t.start()
+        return tid
+
+    def after_cancel(self, tid):
+        with self._lock:
+            t = self._timers.pop(str(tid), None)
+        if t:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    def winfo_exists(self):
+        return self._alive
+
+    def close(self):
+        with self._lock:
+            self._alive = False
+            timers = list(self._timers.values())
+            self._timers.clear()
+        for t in timers:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+_gait_engine = None
+_gait_sched = None
+_gait_lock = threading.Lock()
+
+# -----------------------------
+# Gait preset (match GUI)
+# -----------------------------
+_GAIT_PRESET = {
+    "gait": "diagonal",
+    "step_hz": 1.15,
+    "swing_frac": 0.22,
+    "step_height": 0.040,
+    "speed_scale": 1.00,
+    "height_offset": 0.000,
+    "com_x": 0.00,
+    "com_y": 0.00,
+    "imu_enabled": False,   # GUI checkbox in your screenshot is unchecked
+}
+
+def _apply_gait_preset(eng):
+    """Force the gait engine to the same behavior/params as gait_engine_app GUI."""
+    eng.set_gait(_GAIT_PRESET["gait"])
+    eng.set_params(
+        step_hz=_GAIT_PRESET["step_hz"],
+        swing_frac=_GAIT_PRESET["swing_frac"],
+        base_step_height=_GAIT_PRESET["step_height"],
+    )
+    eng.set_speed_scale(_GAIT_PRESET["speed_scale"])
+    eng.set_height_offset(_GAIT_PRESET["height_offset"])
+    eng.set_com_offset(x=_GAIT_PRESET["com_x"], y=_GAIT_PRESET["com_y"])
+    eng.enable_imu(_GAIT_PRESET["imu_enabled"])
+
+
+def _ensure_gait():
+    global _gait_engine, _gait_sched
+    with _gait_lock:
+        if _gait_engine is not None:
+            return _gait_engine
+
+        _gait_sched = _AfterScheduler()
+        _gait_engine = GaitEngine(
+            iklegs_move=iklegs_move,
+            get_gravity=get_gravity,
+            body_len=BODY_LEN,
+            body_wid=BODY_WID,
+            tk_window=_gait_sched,
+            dt_ms=50,
+            # These defaults already match the GUI, but we still hard-set below.
+        )
+
+        # Force preset so it behaves exactly like your 3rd script GUI config
+        _apply_gait_preset(_gait_engine)
+
+        return _gait_engine
+
+def gait_command(vx: float, vy: float, wz: float):
+    """
+    Primary entry point for driving:
+      vx, vy in units/s; wz in rad/s.
+    Nonzero => engine runs; all zero => engine stops.
+    """
+    eng = _ensure_gait()
+    eng.set_velocity(float(vx), float(vy), float(wz))
+    if (abs(vx) + abs(vy) + abs(wz)) > 1e-6:
+        eng.start()
+    else:
+        eng.stop()
+
+def gait_stop_and_stand():
+    eng = _ensure_gait()
+    eng.set_velocity(0.0, 0.0, 0.0)
+    eng.stop()
+    stand_up()
+
+
+# ——— Walking/turning primitives (compat wrappers; now gait-engine driven) ———
+WALK_SPEED = 15  # kept for compatibility
+
+# default commanded values if someone calls legacy walk_* APIs
+_DEFAULT_VX = 0.20
+_DEFAULT_VY = 0.20
+_DEFAULT_WZ = 1.50
+
+def walk_init(speed=WALK_SPEED):
+    # Start gait with a default forward command (legacy API)
+    gait_command(_DEFAULT_VX, 0.0, 0.0)
+
+def walk_cycle(speed=WALK_SPEED):
+    # Legacy callers expect this to "do a step"; gait runs on its own scheduler.
+    time.sleep(0.05)
+
+def walk_reset(speed=WALK_SPEED):
+    gait_stop_and_stand()
+
+# Legacy toggle-style turning calls (kept so older callers don't break)
+_is_turning_left = False
+_is_turning_right = False
+
+def turn_left(speed=WALK_SPEED):
+    global _is_turning_left, _is_turning_right
+    _is_turning_right = False
+    if not _is_turning_left:
+        _is_turning_left = True
+        lcd.lcd("Turning Left")
+        gait_command(0.0, 0.0, +_DEFAULT_WZ)
+    else:
+        _is_turning_left = False
+        lcd.lcd("Resetting")
+        gait_stop_and_stand()
+        lcd.clear()
+
+def turn_right(speed=WALK_SPEED):
+    global _is_turning_left, _is_turning_right
+    _is_turning_left = False
+    if not _is_turning_right:
+        _is_turning_right = True
+        lcd.lcd("Turning Right")
+        gait_command(0.0, 0.0, -_DEFAULT_WZ)
+    else:
+        _is_turning_right = False
+        lcd.lcd("Resetting")
+        gait_stop_and_stand()
+        lcd.clear()

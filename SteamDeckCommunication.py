@@ -1,6 +1,5 @@
-#SteamDeckCommunication.py
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import threading, socket, time, re
+import threading, socket, time, re, math
 
 import cv2
 from picamera2 import Picamera2
@@ -12,9 +11,13 @@ CONTROL_PORT  = 65432
 CAM_WIDTH     = 1200
 CAM_HEIGHT    = 800
 
-# joystick thresholds & speeds
-WALK_THRESHOLD   = 0.5
-WALK_SPEED       = 15
+# stick behavior (binary with angular sectors)
+STICK_DEADZONE = 0.2
+
+# gait command magnitudes (use gait_engine defaults; just pick fixed values within its GUI ranges)
+VX_CMD = 0.01   # forward/back (units/s)
+VY_CMD = 0.01   # strafe (units/s)
+WZ_CMD = 0.50   # turn (rad/s)
 
 # lockout durations
 REVERSE_SIT_LOCK   = 4.0
@@ -26,126 +29,70 @@ mode              = "normal"
 activated         = False
 
 # — joystick inputs —
+left_x            = 0.0
 left_y            = 0.0
+right_x           = 0.0
 right_y           = 0.0
 
-# — walking state & thread —
-is_walking        = False
-stop_walk_event   = threading.Event()
-walk_thread       = None
+def _ang_diff_deg(a, b):
+    # smallest signed diff a-b in degrees
+    d = (a - b + 180.0) % 360.0 - 180.0
+    return d
 
-# — turning state & threads —
-is_turning_left   = False
-is_turning_right  = False
-turn_left_thread  = None
-turn_right_thread = None
+def _in_sector(angle_deg, center_deg, half_width_deg):
+    return abs(_ang_diff_deg(angle_deg, center_deg)) <= half_width_deg
 
+def left_stick_to_vx_vy(x, y):
+    """
+    Binary mapping with:
+      - cardinals: 60° each (±30°)
+      - diagonals: 30° each (±15°)
+    Returns (vx, vy)
+    """
+    r = math.hypot(x, y)
+    if r <= STICK_DEADZONE:
+        return 0.0, 0.0
 
-def walking_loop():
-    """Perform walk cycles until stop_walk_event is set, then reset stance and stand up."""
-    global is_walking
-    print("[Control] → joystick walking started")
-    mlib.walk_init(speed=WALK_SPEED)
-    while not stop_walk_event.is_set():
-        mlib.walk_cycle(speed=WALK_SPEED)
-    mlib.walk_reset(speed=WALK_SPEED)
-    mlib.stand_up()
-    is_walking = False
-    print("[Control] → joystick walking stopped")
+    ang = math.degrees(math.atan2(y, x))
+    if ang < 0:
+        ang += 360.0
 
+    # Cardinals (±30° around axis)
+    if _in_sector(ang, 90.0, 30.0):     # Up
+        return +VX_CMD, 0.0
+    if _in_sector(ang, 270.0, 30.0):    # Down
+        return -VX_CMD, 0.0
+    if _in_sector(ang, 0.0, 30.0) or _in_sector(ang, 360.0, 30.0):  # Right
+        return 0.0, +VY_CMD
+    if _in_sector(ang, 180.0, 30.0):    # Left
+        return 0.0, -VY_CMD
 
-def start_walk():
-    """Stop any turn (blocking), then begin walking."""
-    global walk_thread, is_walking
-    if is_walking:
-        return
-    stop_turn_left(block=True)
-    stop_turn_right(block=True)
+    # Diagonals (±15° around diagonal)
+    if _in_sector(ang, 45.0, 15.0):     # UpRight
+        return +VX_CMD, +VY_CMD
+    if _in_sector(ang, 135.0, 15.0):    # UpLeft
+        return +VX_CMD, -VY_CMD
+    if _in_sector(ang, 225.0, 15.0):    # DownLeft
+        return -VX_CMD, -VY_CMD
+    if _in_sector(ang, 315.0, 15.0):    # DownRight
+        return -VX_CMD, +VY_CMD
 
-    stop_walk_event.clear()
-    is_walking = True
-    walk_thread = threading.Thread(target=walking_loop, daemon=True)
-    walk_thread.start()
+    # Fallback (shouldn't happen with the sector tiling)
+    return 0.0, 0.0
 
+def right_stick_to_wz(x):
+    if abs(x) <= STICK_DEADZONE:
+        return 0.0
+    # stick left (negative) => turn left (positive wz)
+    return +WZ_CMD if x < 0 else -WZ_CMD
 
-def stop_walk(block=True):
-    """Signal walk_loop to exit; optionally join until reset+stand complete."""
-    global is_walking
-    if not is_walking:
-        return
-    stop_walk_event.set()
-    if block and walk_thread:
-        walk_thread.join()
-
-
-def turn_left_worker():
-    """Toggle on library’s turn_left (blocking) until toggled off & return-moves done."""
-    global is_turning_left
-    print("[Control] → joystick turning left started")
-    mlib.turn_left(speed=WALK_SPEED)
-    # when mlib.turn_left returns, its own return-moves have run
-    is_turning_left = False
-    print("[Control] → joystick turning left finished")
-
-
-def start_turn_left():
-    """Stop walking (blocking), stop any right turn, then spin left."""
-    global turn_left_thread, is_turning_left
-    if is_turning_left:
-        return
-    stop_walk(block=True)
-    stop_turn_right(block=True)
-
-    is_turning_left = True
-    turn_left_thread = threading.Thread(target=turn_left_worker, daemon=True)
-    turn_left_thread.start()
-
-
-def stop_turn_left(block=True):
-    """Toggle-off library turn_left (runs its return moves), wait, then stand up once."""
-    global is_turning_left
-    if not is_turning_left:
-        return
-    # this call toggles the gait off and runs the library’s reset
-    mlib.turn_left(speed=WALK_SPEED)
-    if block and turn_left_thread:
-        turn_left_thread.join()
-    # now finalize with a full stand
-    mlib.stand_up()
-    is_turning_left = False
-
-
-def turn_right_worker():
-    print("[Control] → joystick turning right started")
-    mlib.turn_right(speed=WALK_SPEED)
-    is_turning_right = False
-    print("[Control] → joystick turning right finished")
-
-
-def start_turn_right():
-    """Stop walking (blocking), stop any left turn, then spin right."""
-    global turn_right_thread, is_turning_right
-    if is_turning_right:
-        return
-    stop_walk(block=True)
-    stop_turn_left(block=True)
-
-    is_turning_right = True
-    turn_right_thread = threading.Thread(target=turn_right_worker, daemon=True)
-    turn_right_thread.start()
-
-
-def stop_turn_right(block=True):
-    """Toggle-off library turn_right (runs its return moves), wait, then stand up once."""
-    global is_turning_right
-    if not is_turning_right:
-        return
-    mlib.turn_right(speed=WALK_SPEED)
-    if block and turn_right_thread:
-        turn_right_thread.join()
-    mlib.stand_up()
-    is_turning_right = False
-
+def _halt_gait():
+    # stop gait motion and return to stand (keeps behavior consistent with old walk/turn)
+    try:
+        mlib.gait_stop_and_stand()
+    except Exception:
+        # if gait isn't initialized yet, just stand up
+        mlib.stand_up()
 
 class MJPEGHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -183,15 +130,13 @@ class MJPEGHandler(BaseHTTPRequestHandler):
         finally:
             picam.close()
 
-
 def run_mjpeg_server():
     server = HTTPServer(('0.0.0.0', MJPEG_PORT), MJPEGHandler)
     print(f"[Video] MJPEG server at http://0.0.0.0:{MJPEG_PORT}/stream.mjpg")
     server.serve_forever()
 
-
 def run_control_listener():
-    global busy_until, mode, left_y, right_y, activated
+    global busy_until, mode, left_x, left_y, right_x, right_y, activated
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(('0.0.0.0', CONTROL_PORT))
@@ -219,43 +164,39 @@ def run_control_listener():
                     activated = True
                 continue
 
-            # 1) joystick walking/turning
+            # 1) joystick (vx/vy from left stick, wz from right stick) - binary w/ sectors
             stick_msgs = re.findall(r'(Left Stick|Right Stick) ([XY]) (-?\d+\.\d+)', raw)
             if stick_msgs:
+                # Respect lockouts/posture modes: ignore driving inputs and keep it still
+                if now < busy_until or mode in ("sitting", "kneeling"):
+                    # Ensure gait isn't fighting the posture
+                    try:
+                        mlib.gait_command(0.0, 0.0, 0.0)
+                    except Exception:
+                        pass
+                    continue
+
                 for side, axis, val in stick_msgs:
-                    if axis == 'Y':
-                        if side.startswith('Left'):
-                            left_y = float(val)
+                    fval = float(val)
+                    if side.startswith('Left'):
+                        if axis == 'X':
+                            left_x = fval
                         else:
-                            right_y = float(val)
+                            left_y = fval
+                    else:
+                        if axis == 'X':
+                            right_x = fval
+                        else:
+                            right_y = fval
 
-                on_walk  = left_y < -WALK_THRESHOLD and right_y < -WALK_THRESHOLD
-                on_left  = left_y < -WALK_THRESHOLD and right_y >= -WALK_THRESHOLD
-                on_right = right_y < -WALK_THRESHOLD and left_y >= -WALK_THRESHOLD
+                vx, vy = left_stick_to_vx_vy(left_x, left_y)
+                wz = right_stick_to_wz(right_x)
 
-                # walk
-                if on_walk:
-                    start_walk()
-                    continue
-                if is_walking and not on_walk:
-                    stop_walk(block=True)
-                    continue
-
-                # pivot right (left stick only)
-                if on_left:
-                    start_turn_right()
-                    continue
-                if is_turning_right and not on_left:
-                    stop_turn_right(block=True)
-                    continue
-
-                # pivot left (right stick only)
-                if on_right:
-                    start_turn_left()
-                    continue
-                if is_turning_left and not on_right:
-                    stop_turn_left(block=True)
-                    continue
+                # Run gait if any command present; else stop+stand (old behavior)
+                if (abs(vx) + abs(vy) + abs(wz)) > 1e-6:
+                    mlib.gait_command(vx, vy, wz)
+                else:
+                    _halt_gait()
 
                 continue
 
@@ -270,9 +211,11 @@ def run_control_listener():
                     if btn == expected:
                         if mode=="sitting":
                             print("Unsitting")
+                            _halt_gait()
                             mlib.unsit();   busy_until = now + REVERSE_SIT_LOCK
                         else:
                             print("Unkneeling")
+                            _halt_gait()
                             mlib.unkeel(); busy_until = now + REVERSE_KNEEL_LOCK
                         mode = "normal"
                     continue
@@ -281,25 +224,29 @@ def run_control_listener():
             if now < busy_until:
                 continue
 
-            # 4) button mappings
+            # 4) button mappings (keep as-is; just halt gait first so motions don't fight)
             if btn == "A":
                 print("A was pressed, standing up")
+                _halt_gait()
                 mlib.stand_up(); busy_until = now + 3.5
             elif btn == "B":
                 print("B was pressed, sitting")
+                _halt_gait()
                 mlib.sit();      busy_until = now + 2.5; mode="sitting"
             elif btn == "X":
                 print("X was pressed, kneeling")
+                _halt_gait()
                 mlib.kneel();    busy_until = now + 2.5; mode="kneeling"
             elif btn == "Y":
                 print("Y was pressed, shaking")
+                _halt_gait()
                 mlib.shake();    busy_until = now + 12.0
             elif btn == "RB":
                 print("RB was pressed, dancing")
+                _halt_gait()
                 mlib.dance();    busy_until = now + 4.0
 
     print("[Control] Connection closed")
-
 
 if __name__ == '__main__':
     mlib.initialize_servo_angles()
