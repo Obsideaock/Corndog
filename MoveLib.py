@@ -1,469 +1,676 @@
-import time
+# MoveLib.py
+# ---------------------------------------------------------------------------
+# Corndog MoveLib (minimal): walking + turning ONLY, implemented by directly
+# embedding the same GaitEngine math and tick process from gait_engine_app.py.
+#
+# Public API:
+#   - gait_command(vx, vy, wz): set commanded body-frame velocities.
+#     * Nonzero cmd -> starts engine (self-ticking at dt_ms like the app)
+#     * Zero cmd    -> stops engine immediately; after 1.5s of inactivity,
+#                      sends a one-shot "stand" pose.
+#
+# Optional helper:
+#   - joystick_to_cmd(lx, ly, rx, deadzone=0.5) -> (vx, vy, wz)
+#
+# Dependencies expected in your runtime (same as gait_engine_app.py):
+#   - iklegs_move(leg_offsets, step_multiplier=..., speed=..., delay=...)
+#   - get_gravity() -> (gx, gy, gz) in g-units (already mount-corrected)
+#   - BODY_LEN, BODY_WID
+#
+# Notes:
+#   - Default gait: "diagonal"
+#   - IMU compensation: DISABLED by default (per your request)
+# ---------------------------------------------------------------------------
+
+from __future__ import annotations
+
 import math
-import numpy as np
-import threading
-import board
-import busio
-from adafruit_pca9685 import PCA9685
-from adafruit_motor import servo
-from gpiozero import OutputDevice
-# kinematics imports
-from spot_micro_kinematics.spot_micro_stick_figure import SpotMicroStickFigure
-from spot_micro_kinematics.utilities.transformations import homog_transxyz, homog_rotxyz
-from spot_micro_kinematics.utilities.spot_micro_kinematics import (
-    t_rightback, t_rightfront, t_leftfront, t_leftback, ikine
-)
-# optional LCD feedback
+import os
 import sys
-sys.path.insert(0, '/home/Corndog')
-from lcd import lcd_library as lcd
+import time
+import threading
+import heapq
+from dataclasses import dataclass
+from typing import Callable, Dict, Tuple, Optional, Any
 
-# --- Gait engine import (do not modify gait_engine_app.py) ---
-from gait_engine_app import GaitEngine
+# ---- Resolve dependencies from your runtime ---------------------------------
+# Safest default: try __main__ first, then a module name if provided.
+# You can override with environment variable CORNDOG_HARDWARE_MODULE.
+HARDWARE_MODULE = os.environ.get("CORNDOG_HARDWARE_MODULE", "main")
 
-
-# ——— Hardware setup ———
-i2c = busio.I2C(board.SCL, board.SDA)
-pca = PCA9685(i2c)
-pca.frequency = 50
-
-OE_PIN = 22
-output_enable = OutputDevice(OE_PIN, active_high=False)
-
-SERVO_CHANNELS = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
-SERVO_HOME = {
-    0: 40,  1: 230, 4: 225, 5: 45,
-    6: 130, 7: 130, 8: 130, 9: 135,
-    10: 70, 11: 200,14: 235,15: 40
-}
-
-# build servo objects
-servos = {}
-for ch in SERVO_CHANNELS:
-    s = servo.Servo(pca.channels[ch])
-    s.set_pulse_width_range(500, 2500)
-    s.actuation_range = 270
-    servos[ch] = s
-
-# current angles store
-servo_angles = {}
-
-def initialize_servo_angles():
-    """Initialize servo_angles from SERVO_HOME."""
-    global servo_angles
-    servo_angles = dict(SERVO_HOME)
-
-# ——— Enable/Disable ———
-def enable_servos():
-    """Enable all servos."""
-    output_enable.off()
-    print("Servos enabled")
-
-def disable_servos():
-    """Disable all servos (kill PWM)."""
-    lcd.clear()
-    output_enable.on()
-    for ch in SERVO_CHANNELS:
-        pca.channels[ch].duty_cycle = 0
-
-# ——— Core motion primitive ———
-def move_motors(movements: dict, delay: float = 0.01, speed_multiplier: float = 10):
-    """
-    movements: {channel: delta_angle}
-    delay: per-step pause
-    speed_multiplier: larger → faster
-    """
-    def clamp(a): return max(0, min(270, a))
-
-    chans    = list(movements)
-    currents = [servo_angles.get(c, SERVO_HOME[c]) for c in chans]
-    targets  = [clamp(curr + movements[c]) for curr, c in zip(currents, chans)]
-
-    max_delta = max(abs(t - c) for t, c in zip(targets, currents))
-    steps     = max(1, int(round(max_delta * 10 / speed_multiplier)))
-    incs      = [(t - c) / steps for t, c in zip(targets, currents)]
-    pos       = dict(zip(chans, currents))
-
-    for _ in range(steps):
-        for i, ch in enumerate(chans):
-            pos[ch] = clamp(pos[ch] + incs[i])
-            servos[ch].angle = pos[ch]
-            servo_angles[ch] = pos[ch]
-        time.sleep(delay)
-    # snap to final
-    for ch, tgt in zip(chans, targets):
-        servos[ch].angle = tgt
-        servo_angles[ch] = tgt
-
-# ——— Basic postures ———
-def stand_up():
-    """Return to home stance in three groups."""
-    def set_group(chs):
-        for c in chs:
-            servos[c].angle = SERVO_HOME[c]
-        time.sleep(0.5)
-    groups = [
-        [6, 7, 8, 9],
-        [5, 4, 0, 1],
-        [14, 15, 10, 11]
-    ]
-    set_group(groups[0])
-    time.sleep(0.2)
-    set_group(groups[1])
-    set_group(groups[2])
-    initialize_servo_angles()
-
-def sit():
-    lcd.lcd("Sitting")
-    move_motors({0: -40, 4: 15, 5: -15, 1: 40})
-    move_motors({15: 90, 14: -90, 11: -60, 10: 60, 0: 10, 1: -10})
-
-def kneel():
-    lcd.lcd("Kneeling")
-    move_motors({15: -30, 11: 30, 10: -30, 14: 30})
-
-def unsit():
-    lcd.lcd("Standing Up")
-    move_motors({15: -90, 14: 90, 11: 60, 10: -60, 0: -10, 1: 10})
-    move_motors({0: 40, 4: -15, 5: 15, 1: -40})
-    stand_up()
-    lcd.clear()
-
-def unkeel():
-    lcd.lcd("Standing Up")
-    move_motors({15: 30, 11: -30, 10: 30, 14: -30})
-    stand_up()
-    lcd.clear()
-
-# ——— Fun moves ———
-def shake():
-    lcd.lcd("Shaking")
-    move_motors({0:-40, 4:15, 5:-15, 1:40})
-    move_motors({15:90, 14:-90,11:-60,10:60,0:10,1:-10})
-    time.sleep(0.5)
-    move_motors({10:130, 14:-80}, speed_multiplier=25)
-    time.sleep(.75)
-    for _ in range(4):
-        move_motors({14:40}, speed_multiplier=15)
-        time.sleep(0.15)
-        move_motors({14:-40}, speed_multiplier=15)
-        time.sleep(0.15)
-    time.sleep(.25)
-    move_motors({10:-130, 14:120}, speed_multiplier=25)
-    move_motors({14:-40}, speed_multiplier=25)
-    move_motors({15:-90,14:90,11:60,10:-60,0:-10,1:10})
-    move_motors({0:40,4:-15,5:15,1:-40})
-    stand_up()
-    lcd.clear()
-
-def dance():
-    lcd.lcd("Dancing")
-    for _ in range(4):
-        move_motors({15:-30, 0:-30, 14:30, 1:30})
-        move_motors({15:30, 0:30, 14:-30, 1:-30})
-    lcd.clear()
+Vec3 = Tuple[float, float, float]
+Offsets = Dict[int, Vec3]
 
 
-# ——— Inverse-kinematics utilities ———
-BODY_LEN, BODY_WID = 0.186, 0.078
-L1, L2, L3 = 0.055, 0.1075, 0.130
-LEG_TRANSFORMS = [t_leftfront, t_rightfront, t_leftback, t_rightback]
-MAPPING = {
-    0:{1:{'sign':+1,'offset':130}, 2:{'sign':+1,'offset':-15}, 3:{'sign':+1,'offset':40}},
-    1:{1:{'sign':-1,'offset':130}, 2:{'sign':-1,'offset':0},   3:{'sign':-1,'offset':0}},
-    2:{1:{'sign':-1,'offset':130}, 2:{'sign':+1,'offset':0},   3:{'sign':+1,'offset':180}},
-    3:{1:{'sign':+1,'offset':130}, 2:{'sign':-1,'offset':0},   3:{'sign':-1,'offset':0}},
-}
-SERVO_MAP = {
-    (0,1):0,(0,2):1,(0,3):4,
-    (1,1):5,(1,2):6,(1,3):7,
-    (2,1):8,(2,2):9,(2,3):10,
-    (3,1):11,(3,2):14,(3,3):15,
-}
+def _resolve_runtime():
+	"""
+	Returns:
+		iklegs_move, get_gravity, BODY_LEN, BODY_WID, lcd, provider_module
+	"""
+	envs = []
+	try:
+		envs.append(sys.modules["__main__"])
+	except Exception:
+		pass
+	if HARDWARE_MODULE:
+		try:
+			envs.append(__import__(HARDWARE_MODULE))
+		except Exception:
+			pass
 
-def to_user_angles(leg_idx, thetas):
-    """Convert raw IK (rad) to servo angles (deg + offset)."""
-    out = []
-    for j in (1,2,3):
-        deg = math.degrees(thetas[j-1])
-        cfg = MAPPING[leg_idx][j]
-        out.append(cfg['sign'] * deg + cfg['offset'])
-    return tuple(out)
+	for env in envs:
+		try:
+			iklegs = getattr(env, "iklegs_move")
+			getgrav = getattr(env, "get_gravity")
+			BL = getattr(env, "BODY_LEN")
+			BW = getattr(env, "BODY_WID")
+			lcd = getattr(env, "lcd", None)  # optional
+			return iklegs, getgrav, BL, BW, lcd, env
+		except AttributeError:
+			continue
 
-def full_ik_move(x, y, z, safety=False, steps=10):
-    """Linearly move body from (0,0,0) to (x,y,z)."""
-    start = np.zeros(3)
-    target = np.array([x, y, z])
-    for i, t in enumerate(np.linspace(0, 1, steps)):
-        pos = (1 - t) * start + t * target
-        sm = SpotMicroStickFigure(x=pos[0], y=pos[1], z=pos[2], phi=0, theta=0, psi=0)
-        all_thetas = sm.get_leg_angles()
-        cmds = {}
-        for li, thetas in enumerate(all_thetas):
-            uangs = to_user_angles(li, thetas)
-            for ji, ua in enumerate(uangs, start=1):
-                ch = SERVO_MAP[(li, ji)]
-                cmds[ch] = ua - servo_angles[ch]
-        if safety:
-            print(f"Step {i+1}/{steps}: {cmds}")
-        else:
-            move_motors(cmds)
-
-def single_leg_ik_hip_frame(leg_idx, xh, yh, zh):
-    """Return (q1,q2,q3) for one leg in its hip frame."""
-    ht_body = homog_transxyz(0, 0, 0) @ homog_rotxyz(0, 0, 0)
-    t_leg = LEG_TRANSFORMS[leg_idx](ht_body, BODY_LEN, BODY_WID)
-    p_body = t_leg @ np.array([xh, yh, zh, 1.0])
-    p_local = np.linalg.inv(t_leg) @ p_body
-    front = (leg_idx in (0, 1))
-    return ikine(p_local[0], p_local[1], p_local[2],
-                 L1, L2, L3, legs12=front)
-
-def move_single_leg(leg_idx, x, y, z, safety=False, speed=10):
-    """IK-move one leg to (x,y,z) in hip frame."""
-    q1, q2, q3 = single_leg_ik_hip_frame(leg_idx, x, y, z)
-    uangs = to_user_angles(leg_idx, (q1, q2, q3))
-    cmds = {}
-    for j, ua in enumerate(uangs, start=1):
-        ch = SERVO_MAP[(leg_idx, j)]
-        cmds[ch] = ua - servo_angles[ch]
-    if safety:
-        print(f"Leg {leg_idx} → {cmds}")
-    else:
-        move_motors(cmds, speed_multiplier=speed)
+	raise RuntimeError(
+		"Could not find required symbols. Make sure this module can access:\n"
+		"  iklegs_move, get_gravity, BODY_LEN, BODY_WID (and optionally lcd)\n"
+		"Run this after your hardware script, or set CORNDOG_HARDWARE_MODULE to your module name."
+	)
 
 
-# =============================================================================
-#   GAIT ENGINE INTEGRATION  (replaces ONLY the hand-scripted gait system)
-# =============================================================================
+# ---- Minimal 'tk.after' compatible scheduler (single thread) -----------------
+@dataclass
+class _AfterTask:
+	due: float
+	seq: int
+	callback: Callable[[], Any]
+	cancelled: bool = False
 
-# Simple IMU stub: keep gait engine happy (no tilt compensation).
-def get_gravity():
-    # gx, gy, gz in g-units; default "upright"
-    return (0.0, 0.0, 1.0)
-
-# Home foot positions in each leg's IK "hip frame" (meters).
-# These are reasonable defaults; gait_engine_app provides only *offsets* from home.
-_GAIT_HOME_FOOT = {
-    0: ( 0.060,  0.050, -0.160),  # FL
-    1: ( 0.060, -0.050, -0.160),  # FR
-    2: (-0.060,  0.050, -0.160),  # RL
-    3: (-0.060, -0.050, -0.160),  # RR
-}
-
-def iklegs_move(leg_offsets, step_multiplier=1, speed=25, delay=0.0):
-    """
-    Adapter required by gait_engine_app.py.
-
-    leg_offsets: {leg_idx: (dx, dy, dz)} meters, applied to each leg's home foot position.
-    step_multiplier: larger => smoother/slower (we reduce speed_multiplier accordingly)
-    speed: passed through to move_motors speed_multiplier (after scaling)
-    delay: per-step delay passed to move_motors
-    """
-    cmds = {}
-
-    for leg in (0, 1, 2, 3):
-        dx, dy, dz = leg_offsets.get(leg, (0.0, 0.0, 0.0))
-        hx, hy, hz = _GAIT_HOME_FOOT[leg]
-        x = hx + float(dx)
-        y = hy + float(dy)
-        z = hz + float(dz)
-
-        q1, q2, q3 = single_leg_ik_hip_frame(leg, x, y, z)
-        uangs = to_user_angles(leg, (q1, q2, q3))
-
-        for j, ua in enumerate(uangs, start=1):
-            ch = SERVO_MAP[(leg, j)]
-            curr = servo_angles.get(ch, SERVO_HOME[ch])
-            cmds[ch] = ua - curr
-
-    # Interpret step_multiplier as "more smoothing": lower effective speed => more internal steps
-    sm = max(1, int(step_multiplier))
-    eff_speed = max(0.5, float(speed) / sm)
-
-    if cmds:
-        move_motors(cmds, delay=float(delay), speed_multiplier=eff_speed)
 
 class _AfterScheduler:
-    """
-    Minimal scheduler with the subset of Tk API that GaitEngine uses:
-      - after(ms, callback) -> id
-      - after_cancel(id)
-      - winfo_exists()
-    Implemented with threading.Timer so we can run without Tk mainloop.
-    """
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._timers = {}
-        self._next_id = 1
-        self._alive = True
+	"""Imitates the tiny subset of Tk needed by GaitEngine: after/after_cancel/winfo_exists."""
+	def __init__(self):
+		self._cv = threading.Condition()
+		self._heap: list[tuple[float, int, _AfterTask]] = []
+		self._seq = 0
+		self._alive = True
+		self._thread = threading.Thread(target=self._run, daemon=True)
+		self._thread.start()
 
-    def after(self, ms, callback):
-        with self._lock:
-            if not self._alive:
-                return "0"
-            tid = str(self._next_id)
-            self._next_id += 1
+	def winfo_exists(self) -> bool:
+		return self._alive
 
-        def _wrapped():
-            # Remove handle before running (matches typical after semantics)
-            with self._lock:
-                self._timers.pop(tid, None)
-            try:
-                callback()
-            except Exception:
-                pass
+	def after(self, ms: int, callback: Callable[[], Any]) -> _AfterTask:
+		due = time.monotonic() + (ms / 1000.0)
+		with self._cv:
+			self._seq += 1
+			task = _AfterTask(due=due, seq=self._seq, callback=callback)
+			heapq.heappush(self._heap, (task.due, task.seq, task))
+			self._cv.notify()
+			return task
 
-        t = threading.Timer(ms / 1000.0, _wrapped)
-        t.daemon = True
-        with self._lock:
-            self._timers[tid] = t
-        t.start()
-        return tid
+	def after_cancel(self, task: _AfterTask):
+		with self._cv:
+			task.cancelled = True
+			self._cv.notify()
 
-    def after_cancel(self, tid):
-        with self._lock:
-            t = self._timers.pop(str(tid), None)
-        if t:
-            try:
-                t.cancel()
-            except Exception:
-                pass
+	def shutdown(self):
+		with self._cv:
+			self._alive = False
+			self._cv.notify()
+		# thread is daemon; no hard join necessary
 
-    def winfo_exists(self):
-        return self._alive
-
-    def close(self):
-        with self._lock:
-            self._alive = False
-            timers = list(self._timers.values())
-            self._timers.clear()
-        for t in timers:
-            try:
-                t.cancel()
-            except Exception:
-                pass
-
-_gait_engine = None
-_gait_sched = None
-_gait_lock = threading.Lock()
-
-# -----------------------------
-# Gait preset (match GUI)
-# -----------------------------
-_GAIT_PRESET = {
-    "gait": "diagonal",
-    "step_hz": 1.15,
-    "swing_frac": 0.22,
-    "step_height": 0.040,
-    "speed_scale": 1.00,
-    "height_offset": 0.000,
-    "com_x": 0.00,
-    "com_y": 0.00,
-    "imu_enabled": False,   # GUI checkbox in your screenshot is unchecked
-}
-
-def _apply_gait_preset(eng):
-    """Force the gait engine to the same behavior/params as gait_engine_app GUI."""
-    eng.set_gait(_GAIT_PRESET["gait"])
-    eng.set_params(
-        step_hz=_GAIT_PRESET["step_hz"],
-        swing_frac=_GAIT_PRESET["swing_frac"],
-        base_step_height=_GAIT_PRESET["step_height"],
-    )
-    eng.set_speed_scale(_GAIT_PRESET["speed_scale"])
-    eng.set_height_offset(_GAIT_PRESET["height_offset"])
-    eng.set_com_offset(x=_GAIT_PRESET["com_x"], y=_GAIT_PRESET["com_y"])
-    eng.enable_imu(_GAIT_PRESET["imu_enabled"])
+	def _run(self):
+		while True:
+			with self._cv:
+				if not self._alive:
+					return
+				if not self._heap:
+					self._cv.wait()
+					continue
+				due, _, task = self._heap[0]
+				now = time.monotonic()
+				wait_s = due - now
+				if wait_s > 0:
+					self._cv.wait(timeout=wait_s)
+					continue
+				# due now
+				heapq.heappop(self._heap)
+				if task.cancelled:
+					continue
+			# Run outside lock
+			try:
+				task.callback()
+			except Exception as e:
+				# Don't kill scheduler on callback errors
+				print(f"[MoveLib] Scheduled callback error: {e}")
 
 
-def _ensure_gait():
-    global _gait_engine, _gait_sched
-    with _gait_lock:
-        if _gait_engine is not None:
-            return _gait_engine
+# ---- Gait Engine (copied from gait_engine_app.py; GUI removed) --------------
+class GaitEngine:
+	"""
+	Static gait engine (creep, wave, diagonal) with parametric foot trajectories and IMU-based dz compensation.
+	Do NOT run your old 'live_ik_loop' at the same time; this engine already applies IMU tilt offsets.
 
-        _gait_sched = _AfterScheduler()
-        _gait_engine = GaitEngine(
-            iklegs_move=iklegs_move,
-            get_gravity=get_gravity,
-            body_len=BODY_LEN,
-            body_wid=BODY_WID,
-            tk_window=_gait_sched,
-            dt_ms=50,
-            # These defaults already match the GUI, but we still hard-set below.
-        )
+	Public API:
+	  - start(), stop(), is_active
+	  - set_gait('creep' | 'wave' | 'diagonal')
+	  - set_velocity(vx, vy, wz)   # body-frame (units/s, units/s, rad/s)
+	  - set_params(step_hz=..., swing_frac=..., base_step_height=...)
+	  - set_speed_scale(s)         # NEW: global gait tempo scaler
+	  - set_height_offset(z)       # NEW: global height offset (dz) for all legs
+	  - enable_imu(bool), set_imu_gain(...), set_z_soft_limit(...)
+	  - set_com_offset(x=?, y=?)   # global XY bias for all legs
+	"""
 
-        # Force preset so it behaves exactly like your 3rd script GUI config
-        _apply_gait_preset(_gait_engine)
+	def __init__(
+		self,
+		*,
+		iklegs_move: Callable[..., Any],  # accepts kwargs in your runtime
+		get_gravity: Callable[[], Tuple[float, float, float]],
+		body_len: float,
+		body_wid: float,
+		tk_window: Any,
+		dt_ms: int = 50,            # ~20 Hz
+		step_hz: float = 1.15,
+		swing_frac: float = 0.25,   # portion of cycle spent in swing
+		base_step_height: float = 0.020,
+	):
+		self._iklegs_move = iklegs_move
+		self._get_gravity = get_gravity
+		self._BL = float(body_len)
+		self._BW = float(body_wid)
+		self._win = tk_window
 
-        return _gait_engine
+		self.dt_ms = int(dt_ms)
+		self.dt = self.dt_ms / 1000.0
 
+		# Core gait params
+		self.step_hz = float(step_hz)
+		self.swing_frac = float(swing_frac)
+		self.base_step_height = float(base_step_height)
+
+		self.min_step_h = 0.010
+		self.max_step_h = 0.040
+
+		# NEW: global tempo scaler
+		self.speed_scale = 1.0
+
+		# NEW: global height offset (dz)
+		self.height_offset = 0.0
+		self.height_limit = 0.040
+		self.z_soft_limit = 0.035
+
+		# IMU compensation
+		self.imu_gain = 0.022
+		self._prev_roll = None
+		self._prev_pitch = None
+		self._alpha = 0.07
+		self._imu_enabled = True
+
+		# Cmd velocities
+		self.vx = 0.0
+		self.vy = 0.0
+		self.wz = 0.0
+
+		# Global COM offset (applied to all legs)
+		self.com_x = 0.0
+		self.com_y = 0.0
+
+		# Leg "home" xy (approx) in body frame
+		self._leg_xy = {
+			0: (+self._BL/2.0, +self._BW/2.0),   # FL
+			1: (+self._BL/2.0, -self._BW/2.0),   # FR
+			2: (-self._BL/2.0, +self._BW/2.0),   # RL
+			3: (-self._BL/2.0, -self._BW/2.0),   # RR
+		}
+
+		# Biases
+		self.x_bias_front = 0.030  # +30 mm
+		self.x_bias_rear  = 0.020  # 20 mm (applied backward via negative sign below)
+		self._stance_bias = {
+			0: (+self.x_bias_front, 0.0, 0.0),
+			1: (+self.x_bias_front, 0.0, 0.0),
+			2: (-self.x_bias_rear,  0.0, 0.0),
+			3: (-self.x_bias_rear,  0.0, 0.0),
+		}
+
+		# Default gait
+		self.gait = "diagonal"
+		self._phase_off = self._phase_offsets(self.gait)
+		self.phase = 0.0
+
+		self._after_id = None
+		self._active = False
+
+	def _phase_offsets(self, name: str) -> Dict[int, float]:
+		# Returns phase offset in [0..1) per leg
+		if name == "creep":
+			return {0: 0.0, 3: 0.25, 1: 0.50, 2: 0.75}
+		if name == "wave":
+			return {0: 0.0, 1: 0.25, 3: 0.50, 2: 0.75}
+		# diagonal: FL+RR together, FR+RL together
+		return {0: 0.0, 3: 0.0, 1: 0.5, 2: 0.5}
+
+	@property
+	def is_active(self) -> bool:
+		return self._active
+
+	def start(self):
+		if self._active:
+			return
+		self._active = True
+		self._tick()
+
+	def stop(self):
+		self._active = False
+		if self._win and self._after_id is not None:
+			try:
+				self._win.after_cancel(self._after_id)
+			except Exception:
+				pass
+		self._after_id = None
+
+	def set_gait(self, name: str):
+		if name not in ('creep', 'wave', 'diagonal'):
+			raise ValueError(f"Unknown gait: {name}")
+		self.gait = name
+		self._phase_off = self._phase_offsets(name)
+
+	def set_velocity(self, vx: float, vy: float, wz: float):
+		self.vx = float(vx)
+		self.vy = float(vy)
+		self.wz = float(wz)
+
+	def set_params(self, *, step_hz: Optional[float] = None, swing_frac: Optional[float] = None, base_step_height: Optional[float] = None):
+		if step_hz is not None:
+			self.step_hz = float(step_hz)
+		if swing_frac is not None:
+			self.swing_frac = float(swing_frac)
+		if base_step_height is not None:
+			self.base_step_height = float(base_step_height)
+
+	# NEW: global gait tempo scaler (affects phase advance only)
+	def set_speed_scale(self, s: float):
+		s = float(s)
+		self.speed_scale = _clamp(s, 0.05, 3.0)
+
+	# NEW: global height offset (dz) for all legs
+	def set_height_offset(self, z: float):
+		z = float(z)
+		self.height_offset = _clamp(z, -self.height_limit, self.height_limit)
+
+	def enable_imu(self, enabled: bool):
+		self._imu_enabled = bool(enabled)
+
+	def set_imu_gain(self, gain: float):
+		self.imu_gain = float(gain)
+
+	def set_z_soft_limit(self, zmax: float):
+		self.z_soft_limit = float(zmax)
+
+	# global XY bias setter
+	def set_com_offset(self, x: Optional[float] = None, y: Optional[float] = None):
+		if x is not None:
+			self.com_x = float(x)
+		if y is not None:
+			self.com_y = float(y)
+
+	def _tick(self):
+		if not self._active:
+			return
+
+		# 1) IMU dz (optional)
+		z_imu = self._compute_imu_dz() if self._imu_enabled else {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
+
+		# 2) Advance phase if any motion commanded
+		if (abs(self.vx) + abs(self.vy) + abs(self.wz)) > 1e-5:
+			# NEW: speed_scale affects phase (tempo) only, so step length math stays consistent
+			self.phase = (self.phase + (self.step_hz * self.speed_scale) * self.dt) % 1.0
+
+		# 3) Leg offsets
+		leg_offsets: Offsets = {}
+		for leg in (0, 1, 2, 3):
+			phi = (self.phase + self._phase_off[leg]) % 1.0
+			Dx, Dy = self._per_leg_body_displacement_per_cycle(leg)
+			dx, dy, dz_traj = self._foot_trajectory(phi, Dx, Dy)
+
+			# Soft clamp gait+IMU, then add global height offset, then absolute clamp.
+			dz_gait_imu = _clamp(dz_traj + z_imu[leg], -self.z_soft_limit, self.z_soft_limit)
+			dz = _clamp(dz_gait_imu + self.height_offset, -self.height_limit, self.height_limit)
+
+			bx, by, _ = self._stance_bias.get(leg, (0.0, 0.0, 0.0))
+			cx, cy = self.com_x, self.com_y
+			leg_offsets[leg] = (dx + bx + cx, dy + by + cy, dz)
+
+		# 4) Execute small step (iklegs_move interpolates internally)
+		self._iklegs_move(leg_offsets, step_multiplier=1, speed=25, delay=0.0)
+
+		# 5) Reschedule
+		if self._win and self._win.winfo_exists():
+			self._after_id = self._win.after(self.dt_ms, self._tick)
+		else:
+			self._active = False
+			self._after_id = None
+
+	# ----- Helpers -----
+	def _per_leg_body_displacement_per_cycle(self, leg: int) -> Tuple[float, float]:
+		# IMPORTANT: use *base* step_hz here (NOT speed_scale) so step length stays consistent
+		T = 1.0 / max(1e-6, self.step_hz)
+
+		rx, ry = self._leg_xy[leg]
+		vx_leg = self.vx - self.wz * ry
+		vy_leg = self.vy + self.wz * rx
+
+		Dx = vx_leg * T
+		Dy = vy_leg * T
+		if abs(Dx) < 1e-5:
+			Dx = 0.0
+		if abs(Dy) < 1e-5:
+			Dy = 0.0
+		return Dx, Dy
+
+	def _foot_trajectory(self, phi: float, Dx: float, Dy: float) -> Vec3:
+		# piecewise: swing then stance
+		sfrac = _clamp(self.swing_frac, 0.05, 0.45)
+		x_half = Dx / 2.0
+		y_half = Dy / 2.0
+
+		if phi < sfrac:
+			# Swing: move from back to front with a sine lift
+			s = phi / sfrac
+			dx = -x_half + Dx * s
+			dy = -y_half + Dy * s
+			dz = self._step_height_adapt() * math.sin(math.pi * s)
+		else:
+			# Stance: linear back drift (foot "sticks" to ground in world)
+			t = (phi - sfrac) / (1.0 - sfrac)
+			dx = +x_half - Dx * t
+			dy = +y_half - Dy * t
+			dz = 0.0
+		return (dx, dy, dz)
+
+	def _compute_imu_dz(self) -> Dict[int, float]:
+		half_len = self._BL / 2.0
+		half_wid = self._BW / 2.0
+
+		gx, gy, gz = self._get_gravity()
+		roll = math.atan2(gy, gz)
+		pitch = math.atan2(-gx, math.sqrt(gy*gy + gz*gz))
+
+		# low-pass
+		if self._prev_roll is None:
+			self._prev_roll = roll
+			self._prev_pitch = pitch
+		else:
+			self._prev_roll = (1.0 - self._alpha) * self._prev_roll + self._alpha * roll
+			self._prev_pitch = (1.0 - self._alpha) * self._prev_pitch + self._alpha * pitch
+
+		roll = self._prev_roll
+		pitch = self._prev_pitch
+
+		# approximate dz at each foot due to tilt (small-angle)
+		# z = pitch*x + roll*y, with x forward, y left
+		raw = {
+			0: (pitch * (+half_len) + roll * (+half_wid)),
+			1: (pitch * (+half_len) + roll * (-half_wid)),
+			2: (pitch * (-half_len) + roll * (+half_wid)),
+			3: (pitch * (-half_len) + roll * (-half_wid)),
+		}
+
+		z = {}
+		for leg, v in raw.items():
+			z[leg] = _clamp(self.imu_gain * v, -self.z_soft_limit, self.z_soft_limit)
+		return z
+
+	def _step_height_adapt(self) -> float:
+		if self._prev_roll is None:
+			return self.base_step_height
+		tilt = math.hypot(self._prev_roll, self._prev_pitch)
+		k = 1.5
+		h = self.base_step_height * (1.0 + k * min(0.35, abs(tilt)))
+		return _clamp(h, self.min_step_h, self.max_step_h)
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+	return hi if x > hi else lo if x < lo else x
+
+
+# ---- MoveLib wrapper: command interface + inactivity reset -------------------
+_ENGINE_LOCK = threading.Lock()
+_ENGINE: Optional[GaitEngine] = None
+_SCHED: Optional[_AfterScheduler] = None
+_IKLEGS = None  # cached
+_GETGRAV = None
+
+# inactivity behavior
+_INACTIVITY_RESET_S = 1.5
+_RESET_TIMER: Optional[threading.Timer] = None
+_LAST_ACTIVE_T = 0.0  # monotonic time
+_STATE_LOCK = threading.Lock()
+
+
+def _ensure_engine() -> GaitEngine:
+	global _ENGINE, _SCHED, _IKLEGS, _GETGRAV
+	with _ENGINE_LOCK:
+		if _ENGINE is not None:
+			return _ENGINE
+
+		iklegs, getgrav, BL, BW, _lcd, _env = _resolve_runtime()
+		_IKLEGS = iklegs
+		_GETGRAV = getgrav
+
+		_SCHED = None
+		_ENGINE = GaitEngine(
+			iklegs_move=iklegs,
+			get_gravity=getgrav,
+			body_len=BL,
+			body_wid=BW,
+			tk_window=None,
+			dt_ms=50,         # keep EXACTLY as gait_engine_app default
+			step_hz=1.15,
+			swing_frac=0.25,
+			base_step_height=0.020,
+		)
+		_ENGINE.set_gait("diagonal")
+		_ENGINE.enable_imu(False)   # per request
+		return _ENGINE
+
+
+
+def _ensure_scheduler(eng: GaitEngine) -> _AfterScheduler:
+	"""Ensure the internal 'after' scheduler exists and is attached to the engine."""
+	global _SCHED
+	if _SCHED is None:
+		_SCHED = _AfterScheduler()
+		eng._win = _SCHED  # attach scheduler (same interface as Tk)
+	return _SCHED
+
+
+def _shutdown_scheduler():
+	"""Shut down the scheduler thread so the gait loop has no background thread when idle."""
+	global _SCHED
+	if _SCHED is not None:
+		try:
+			_SCHED.shutdown()
+		except Exception:
+			pass
+		_SCHED = None
+
+def _cancel_reset_timer_locked():
+	global _RESET_TIMER
+	if _RESET_TIMER is not None:
+		try:
+			_RESET_TIMER.cancel()
+		except Exception:
+			pass
+		_RESET_TIMER = None
+
+
+def _schedule_reset_timer_locked():
+	"""Starts the one-shot timer that will send stand pose after inactivity."""
+	global _RESET_TIMER
+	if _RESET_TIMER is not None:
+		return
+	t = threading.Timer(_INACTIVITY_RESET_S, _reset_to_stand_if_still_inactive)
+	t.daemon = True
+	_RESET_TIMER = t
+	t.start()
+
+
+def _reset_to_stand_if_still_inactive():
+	"""Timer callback: if still inactive, send one stand pose."""
+	global _RESET_TIMER
+	eng = _ensure_engine()
+	now = time.monotonic()
+
+	with _STATE_LOCK:
+		_RESET_TIMER = None
+		inactive_for = now - _LAST_ACTIVE_T
+		# Only reset if we've remained inactive for the full duration and the engine is stopped.
+		if inactive_for + 1e-6 < _INACTIVITY_RESET_S:
+			return
+		if eng.is_active:
+			return
+
+	# Send stand pose outside lock
+	_send_stand_pose(eng)
+
+
+def _send_stand_pose(eng: GaitEngine):
+	"""
+	One-shot "standing" pose using the same math path as the engine:
+	set phase so all legs are in stance branch, with Dx=Dy=0.
+	"""
+	# Ensure commanded velocities are zero
+	eng.set_velocity(0.0, 0.0, 0.0)
+
+	# Pick a phase where phi == swing_frac is stance (since condition is phi < swing_frac).
+	phase_save = eng.phase
+	eng.phase = float(_clamp(eng.swing_frac, 0.05, 0.45))
+
+	z_imu = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}  # IMU disabled anyway
+	leg_offsets: Offsets = {}
+	for leg in (0, 1, 2, 3):
+		phi = (eng.phase + eng._phase_off[leg]) % 1.0
+		Dx, Dy = 0.0, 0.0
+		dx, dy, dz_traj = eng._foot_trajectory(phi, Dx, Dy)
+
+		dz_gait_imu = _clamp(dz_traj + z_imu[leg], -eng.z_soft_limit, eng.z_soft_limit)
+		dz = _clamp(dz_gait_imu + eng.height_offset, -eng.height_limit, eng.height_limit)
+
+		bx, by, _ = eng._stance_bias.get(leg, (0.0, 0.0, 0.0))
+		cx, cy = eng.com_x, eng.com_y
+		leg_offsets[leg] = (dx + bx + cx, dy + by + cy, dz)
+
+	eng._iklegs_move(leg_offsets, step_multiplier=1, speed=25, delay=0.0)
+	eng.phase = phase_save
+
+
+# ---- Public API --------------------------------------------------------------
 def gait_command(vx: float, vy: float, wz: float):
-    """
-    Primary entry point for driving:
-      vx, vy in units/s; wz in rad/s.
-    Nonzero => engine runs; all zero => engine stops.
-    """
-    eng = _ensure_gait()
-    eng.set_velocity(float(vx), float(vy), float(wz))
-    if (abs(vx) + abs(vy) + abs(wz)) > 1e-6:
-        eng.start()
-    else:
-        eng.stop()
+	"""
+	Set body-frame velocity command.
+	Nonzero -> start engine and walk/turn.
+	Zero    -> stop engine immediately; after 1.5s of inactivity send stand pose.
+	"""
+	global _LAST_ACTIVE_T
 
-def gait_stop_and_stand():
-    eng = _ensure_gait()
-    eng.set_velocity(0.0, 0.0, 0.0)
-    eng.stop()
-    stand_up()
+	eng = _ensure_engine()
+
+	# Clamp to your requested maxima
+	vx = _clamp(float(vx), -0.15, 0.15)
+	vy = _clamp(float(vy), -0.11, 0.11)
+	wz = _clamp(float(wz), -1, 1)
+
+	active = (abs(vx) + abs(vy) + abs(wz)) > 1e-6
+	now = time.monotonic()
+
+	with _STATE_LOCK:
+		if active:
+			_LAST_ACTIVE_T = now
+			_cancel_reset_timer_locked()
+
+	# Apply command + start/stop engine
+	if active:
+		eng.set_velocity(vx, vy, wz)
+		if not eng.is_active:
+			_ensure_scheduler(eng)
+			eng.start()
+	else:
+		# stop immediately
+		eng.set_velocity(0.0, 0.0, 0.0)
+		if eng.is_active:
+			eng.stop()
+		_shutdown_scheduler()
+		with _STATE_LOCK:
+			# start inactivity timer; it will send a stand pose if nothing resumes
+			_schedule_reset_timer_locked()
 
 
-# ——— Walking/turning primitives (compat wrappers; now gait-engine driven) ———
-WALK_SPEED = 15  # kept for compatibility
+def joystick_to_cmd(lx: float, ly: float, rx: float, *, deadzone: float = 0.5) -> Tuple[float, float, float]:
+	"""
+	Map Steam Deck joystick axes to (vx, vy, wz) using your binary + 8-direction quantization rule.
+	- Left stick: translation (vx/vy), snapped to 8 dirs (0/45/90/... degrees)
+	- Right stick: rotation (wz) from rx only
+	Assumes typical joystick conventions: up is ly=-1, right is lx=+1.
+	"""
+	lx = float(lx)
+	ly = float(ly)
+	rx = float(rx)
 
-# default commanded values if someone calls legacy walk_* APIs
-_DEFAULT_VX = 0.20
-_DEFAULT_VY = 0.20
-_DEFAULT_WZ = 1.50
+	# Translation
+	vx = 0.0
+	vy = 0.0
+	mag = math.hypot(lx, ly)
+	if mag >= deadzone:
+		# Define forward axis as -ly (since up is negative).
+		fwd = -ly
+		right = lx
+		ang = (math.degrees(math.atan2(right, fwd)) + 360.0) % 360.0  # 0=fwd, 90=right
 
-def walk_init(speed=WALK_SPEED):
-    # Start gait with a default forward command (legacy API)
-    gait_command(_DEFAULT_VX, 0.0, 0.0)
+		# Snap to nearest of 8 directions (every 45 degrees).
+		dirs = [0, 45, 90, 135, 180, 225, 270, 315]
+		nearest = min(dirs, key=lambda d: min((ang - d) % 360, (d - ang) % 360))
 
-def walk_cycle(speed=WALK_SPEED):
-    # Legacy callers expect this to "do a step"; gait runs on its own scheduler.
-    time.sleep(0.05)
+		# Only accept if within ±30° of that direction (your spec).
+		diff = min((ang - nearest) % 360, (nearest - ang) % 360)
+		if diff <= 30.0:
+			if nearest in (0, 45, 315):
+				vx = 0.15
+			elif nearest in (180, 135, 225):
+				vx = -0.15
+			else:
+				vx = 0.0
 
-def walk_reset(speed=WALK_SPEED):
-    gait_stop_and_stand()
+			if nearest in (90, 45, 135):
+				vy = -0.11
+			elif nearest in (270, 225, 315):
+				vy = 0.11
+			else:
+				vy = 0.0
 
-# Legacy toggle-style turning calls (kept so older callers don't break)
-_is_turning_left = False
-_is_turning_right = False
+	# Rotation
+	wz = 0.0
+	if rx >= deadzone:
+		wz = -1
+	elif rx <= -deadzone:
+		wz = 1
 
-def turn_left(speed=WALK_SPEED):
-    global _is_turning_left, _is_turning_right
-    _is_turning_right = False
-    if not _is_turning_left:
-        _is_turning_left = True
-        lcd.lcd("Turning Left")
-        gait_command(0.0, 0.0, +_DEFAULT_WZ)
-    else:
-        _is_turning_left = False
-        lcd.lcd("Resetting")
-        gait_stop_and_stand()
-        lcd.clear()
+	return vx, vy, wz
 
-def turn_right(speed=WALK_SPEED):
-    global _is_turning_left, _is_turning_right
-    _is_turning_left = False
-    if not _is_turning_right:
-        _is_turning_right = True
-        lcd.lcd("Turning Right")
-        gait_command(0.0, 0.0, -_DEFAULT_WZ)
-    else:
-        _is_turning_right = False
-        lcd.lcd("Resetting")
-        gait_stop_and_stand()
-        lcd.clear()
+
+def shutdown():
+	"""Stop gait engine and shut down the internal scheduler."""
+	global _ENGINE, _SCHED
+	eng = _ENGINE
+	if eng is not None and eng.is_active:
+		try:
+			eng.stop()
+		except Exception:
+			pass
+	with _STATE_LOCK:
+		_cancel_reset_timer_locked()
+	if _SCHED is not None:
+		try:
+			_SCHED.shutdown()
+		except Exception:
+			pass
