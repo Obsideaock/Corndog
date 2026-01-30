@@ -66,8 +66,9 @@ class GaitEngine:
 	  - set_gait('creep' | 'wave' | 'diagonal')
 	  - set_velocity(vx, vy, wz)   # body-frame (units/s, units/s, rad/s)
 	  - set_params(step_hz=..., swing_frac=..., base_step_height=...)
-	  - set_speed_scale(s)         # NEW: global gait tempo scaler
-	  - set_height_offset(z)       # NEW: global height offset (dz) for all legs
+	  - set_speed_scale(s)         # global gait tempo scaler
+	  - set_height_offset(z)       # global height offset (dz) for all legs
+	  - set_leg_z_scale(leg, scale)# NEW: per-leg Z multiplier
 	  - enable_imu(bool), set_imu_gain(...), set_z_soft_limit(...)
 	  - set_com_offset(x=?, y=?)   # global XY bias for all legs
 	"""
@@ -88,7 +89,7 @@ class GaitEngine:
 		max_step_height: float = 0.055,
 		imu_gain: float = 5.0,
 		z_soft_limit: float = 0.04,
-		height_limit: float = 0.10,   # NEW: absolute clamp for height_offset + gait dz
+		height_limit: float = 0.10,   # absolute clamp for height_offset + gait dz
 	):
 		# Injected deps
 		self._iklegs_move = iklegs_move
@@ -103,12 +104,15 @@ class GaitEngine:
 		self.step_hz = float(step_hz)
 		self.swing_frac = float(swing_frac)
 
-		# NEW: Global speed scaler (tempo). 1.0 = normal.
+		# Global speed scaler (tempo). 1.0 = normal.
 		self.speed_scale = 1.0
 
-		# NEW: Global height offset applied to all legs (dz)
+		# Global height offset applied to all legs (dz)
 		self.height_offset = 0.0
 		self.height_limit = float(height_limit)
+
+		# NEW: per-leg Z scaling (1.0 = normal, 1.2 = 120% vertical motion)
+		self.leg_z_scale = {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0}
 
 		# Heights & limits
 		self.base_step_height = float(base_step_height)
@@ -202,21 +206,26 @@ class GaitEngine:
 			self.step_hz = float(step_hz)
 		if swing_frac is not None:
 			if not 0.05 <= swing_frac <= 0.60:
-				# diagonal gait might reasonably want larger swing windows
 				raise ValueError("swing_frac should be between 0.05 and 0.60")
 			self.swing_frac = float(swing_frac)
 		if base_step_height is not None:
 			self.base_step_height = float(base_step_height)
 
-	# NEW: global gait tempo scaler (affects phase advance only)
+	# global gait tempo scaler (affects phase advance only)
 	def set_speed_scale(self, s: float):
 		s = float(s)
 		self.speed_scale = _clamp(s, 0.05, 3.0)
 
-	# NEW: global height offset (dz) for all legs
+	# global height offset (dz) for all legs
 	def set_height_offset(self, z: float):
 		z = float(z)
 		self.height_offset = _clamp(z, -self.height_limit, self.height_limit)
+
+	# NEW: per-leg Z scaling (multiplies vertical motion)
+	def set_leg_z_scale(self, leg: int, scale: float):
+		leg = int(leg)
+		scale = float(scale)
+		self.leg_z_scale[leg] = _clamp(scale, 0.25, 2.5)
 
 	def enable_imu(self, enabled: bool):
 		self._imu_enabled = bool(enabled)
@@ -244,7 +253,6 @@ class GaitEngine:
 
 		# 2) Advance phase if any motion commanded
 		if (abs(self.vx) + abs(self.vy) + abs(self.wz)) > 1e-5:
-			# NEW: speed_scale affects phase (tempo) only, so step length math stays consistent
 			self.phase = (self.phase + (self.step_hz * self.speed_scale) * self.dt) % 1.0
 
 		# 3) Leg offsets
@@ -254,8 +262,12 @@ class GaitEngine:
 			Dx, Dy = self._per_leg_body_displacement_per_cycle(leg)
 			dx, dy, dz_traj = self._foot_trajectory(phi, Dx, Dy)
 
-			# Soft clamp gait+IMU, then add global height offset, then absolute clamp.
-			dz_gait_imu = _clamp(dz_traj + z_imu[leg], -self.z_soft_limit, self.z_soft_limit)
+			# NEW: per-leg Z scaling applied to (gait dz + IMU dz)
+			zscale = self.leg_z_scale.get(leg, 1.0)
+			dz_scaled = (dz_traj + z_imu[leg]) * zscale
+
+			# Soft clamp scaled (gait+IMU), then add global height offset, then absolute clamp.
+			dz_gait_imu = _clamp(dz_scaled, -self.z_soft_limit, self.z_soft_limit)
 			dz = _clamp(dz_gait_imu + self.height_offset, -self.height_limit, self.height_limit)
 
 			bx, by, _ = self._stance_bias.get(leg, (0.0, 0.0, 0.0))
@@ -377,7 +389,7 @@ class GaitApp:
 		self.btn = tk.Button(panel, text="Start Gait", command=self._toggle)
 		self.btn.grid(row=0, column=0, sticky="we", padx=4, pady=4)
 
-		# Gait selector (NEW: diagonal)
+		# Gait selector (includes diagonal)
 		self.gait_var = tk.StringVar(value="diagonal")
 		gait_menu = tk.OptionMenu(panel, self.gait_var, "creep", "wave", "diagonal", command=lambda _: self._on_gait())
 		gait_menu.grid(row=0, column=1, sticky="we", padx=4, pady=4)
@@ -397,7 +409,7 @@ class GaitApp:
 		self.swg_var = self._mk_param(panel, "swing_frac",  0.10, 0.60, self.engine.swing_frac,     0.01, 1, self._on_swing_frac, row=2)
 		self.hgt_var = self._mk_param(panel, "step_height", 0.010, 0.060, self.engine.base_step_height, 0.001, 2, self._on_step_height, row=2)
 
-		# NEW: Global speed + height sliders
+		# Global speed + height sliders
 		global_frame = tk.LabelFrame(panel, text="Global modifiers", padx=4, pady=4)
 		global_frame.grid(row=3, column=0, columnspan=3, sticky="we", padx=4, pady=(6, 2))
 		self.speed_var = self._mk_scale(global_frame, "speed", 0.10, 2.00, 1.00, 0, self._on_speed_scale, 0.05, row=0)
@@ -409,9 +421,17 @@ class GaitApp:
 		self.comx_var = self._mk_scale(com_frame, "com_x", -0.10, 0.10, 0.00, 0, self._on_com_x, 0.01, row=0)
 		self.comy_var = self._mk_scale(com_frame, "com_y", -0.05, 0.05, 0.00, 1, self._on_com_y, 0.01, row=0)
 
+		# NEW: Per-leg Z scaling (%)
+		zscale_frame = tk.LabelFrame(panel, text="Per-leg Z scale (%)", padx=4, pady=4)
+		zscale_frame.grid(row=5, column=0, columnspan=3, sticky="we", padx=4, pady=(6, 2))
+		self.fl_z = self._mk_scale(zscale_frame, "FL", 50, 250, 100, 0, lambda v: self._on_leg_z(0, v), 1, row=0)
+		self.fr_z = self._mk_scale(zscale_frame, "FR", 50, 250, 100, 1, lambda v: self._on_leg_z(1, v), 1, row=0)
+		self.rl_z = self._mk_scale(zscale_frame, "RL", 50, 250, 100, 0, lambda v: self._on_leg_z(2, v), 1, row=1)
+		self.rr_z = self._mk_scale(zscale_frame, "RR", 50, 250, 100, 1, lambda v: self._on_leg_z(3, v), 1, row=1)
+
 		# Home button
 		btn_home = tk.Button(panel, text="Feet → Home", command=self._home_feet)
-		btn_home.grid(row=5, column=0, sticky="we", padx=4, pady=6)
+		btn_home.grid(row=6, column=0, sticky="we", padx=4, pady=6)
 
 		# Status row
 		self.status = tk.Label(self.window, text="Ready", anchor="w")
@@ -462,7 +482,8 @@ class GaitApp:
 		iklegs_move = self.engine._iklegs_move
 		ox, oy = self.engine.com_x, self.engine.com_y
 		oz = self.engine.height_offset
-		iklegs_move({0: (ox, oy, oz), 1: (ox, oy, oz), 2: (ox, oy, oz), 3: (ox, oy, oz)}, step_multiplier=10, speed=20, delay=0.0)
+		iklegs_move({0: (ox, oy, oz), 1: (ox, oy, oz), 2: (ox, oy, oz), 3: (ox, oy, oz)},
+					step_multiplier=10, speed=20, delay=0.0)
 		self._lcd_clear()
 
 	def _on_gait(self):
@@ -482,13 +503,18 @@ class GaitApp:
 	def _on_swing_frac(self, v):  self.engine.set_params(swing_frac=float(v))
 	def _on_step_height(self, v): self.engine.set_params(base_step_height=float(v))
 
-	# NEW: global speed + height callbacks
+	# global speed + height callbacks
 	def _on_speed_scale(self, v):   self.engine.set_speed_scale(float(v))
 	def _on_height_offset(self, v): self.engine.set_height_offset(-float(v))
 
 	# COM offset callbacks
 	def _on_com_x(self, v): self.engine.set_com_offset(x=-float(v))
 	def _on_com_y(self, v): self.engine.set_com_offset(y=-float(v))
+
+	# NEW: per-leg Z scale callback (slider is percent)
+	def _on_leg_z(self, leg: int, percent: float):
+		scale = float(percent) / 100.0
+		self.engine.set_leg_z_scale(leg, scale)
 
 	# Status/LCD helpers
 	def _set_status(self, s):
@@ -524,8 +550,7 @@ def main():
 
 	# Build the app window
 	window = tk.Tk()
-	app = GaitApp(window, iklegs_move, get_gravity, BODY_LEN, BODY_WID, lcd=lcd)
-
+	_ = GaitApp(window, iklegs_move, get_gravity, BODY_LEN, BODY_WID, lcd=lcd)
 	window.mainloop()
 
 

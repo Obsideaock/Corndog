@@ -42,7 +42,7 @@ output_enable = OutputDevice(OE_PIN, active_high=False)
 
 # Define the servo channels and positions
 servo_channels = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
-servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9: 135, 10: 73, 11: 194, 14: 235, 15: 37}
+servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9: 135, 10: 73, 11: 194+5, 14: 235, 15: 37-4}
 TURN_SCALE = 0.2
 LEFT_CHANNELS  = {15, 11,  0,  4}  # FL ankle, FL thigh, BL ankle, BL thigh
 RIGHT_CHANNELS = {14, 10,  1,  5}  # FR ankle, FR thigh, BR ankle, BR thigh
@@ -296,7 +296,7 @@ LEG_TRANSFORMS = {
 
 # 2) per-leg sign+offset and channel wiring
 MAPPING = {
-	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  122}, 3:{'sign':+1,'offset': -86+246}},
+	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  122+5}, 3:{'sign':+1,'offset': -86+242}},
 	1: {1:{'sign':-1,'offset':228},  2:{'sign':-1,'offset':  34+78}, 3:{'sign':-1,'offset': 305-140}},
 	2: {1:{'sign':-1,'offset':406},  2:{'sign':+1,'offset':  150}, 3:{'sign':+1,'offset':  162}},
 	3: {1:{'sign':+1,'offset':35},   2:{'sign':-1,'offset':  89},  3:{'sign':-1,'offset': 161}},
@@ -845,16 +845,28 @@ def create_gui():
 
 	# ---- Sit context: Shake + Unsit ----
 	def arm_shake():
-		move_motors({10: 130, 14: -80}, speed_multiplier=25)
+		move_motors({10: 110, 14: -80}, speed_multiplier=25)
 		for _ in range(4):
 			move_motors({14: 40}, speed_multiplier=15)
 			time.sleep(.15)
 			move_motors({14: -40}, speed_multiplier=15)
 			time.sleep(.15)
-		move_motors({10: -130, 14: 120}, speed_multiplier=25)
+		move_motors({10: -110, 14: 120}, speed_multiplier=25)
 		move_motors({14: -40}, speed_multiplier=25)
 		# keep sit-context visible after shaking
-		show_only(shake_arm_button, unsit_button)
+		show_only(shake_arm_button, unsit_button, wave_button)
+		
+	def wave():
+		move_motors({10: 50, 14: 80, 8:-20}, speed_multiplier=25)
+		for _ in range(4):
+			move_motors({14: 20, 8:40}, speed_multiplier=15)
+			time.sleep(.15)
+			move_motors({14: -20, 8:-40}, speed_multiplier=15)
+			time.sleep(.15)
+		move_motors({10: -50, 14: -40, 8:20}, speed_multiplier=25)
+		move_motors({14: -40}, speed_multiplier=25)
+		# keep sit-context visible after shaking
+		show_only(shake_arm_button, unsit_button, wave_button)
 
 	def unsit():
 		global is_sitting
@@ -878,10 +890,10 @@ def create_gui():
 			move_motors({0: -40, 4: 15, 5: -15, 1: 40})
 			move_motors({15:90, 14:-90, 11:-60, 10:60, 0:10, 1:-10})
 			# show ONLY the two context buttons (Sit itself is hidden)
-			show_only(shake_arm_button, unsit_button)
+			show_only(shake_arm_button, unsit_button, wave_button)
 		else:
 			# already sitting → just ensure the context view is active
-			show_only(shake_arm_button, unsit_button)
+			show_only(shake_arm_button, unsit_button, wave_button)
 
 	def dance():
 		lcd.lcd("Dancing")
@@ -1057,6 +1069,7 @@ def create_gui():
 
 	# Sit-context buttons (NOT part of main menu; exclude from show_all)
 	shake_arm_button   = make_button("Shake", arm_shake, include_in_show_all=False)
+	wave_button        = make_button("Wave", wave, include_in_show_all=False)
 	unsit_button       = make_button("Unsit", unsit, include_in_show_all=False)
 
 	# New: the single stage button used for Companion 2 → 3 → Reset
@@ -1086,4 +1099,4 @@ def create_gui():
 	window.mainloop()
 
 if __name__ == "__main__":
-    create_gui()
+	create_gui()
