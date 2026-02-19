@@ -226,6 +226,41 @@ class QueueController:
 # ----------------------------
 MOTIONS: List[Motion] = [
 	Motion(
+		label="Comp-Open",
+		steps=[
+			CALL(lambda: bot.iklegs_move(
+				{0:(0.05,0,-0.09), 1:(0.05,0,-0.09), 2:(-0.05,0,-0.09), 3:(-0.05,0,-0.09)},
+				step_multiplier=15, speed=10, delay=0.01
+			)),
+		],
+	),
+	Motion(
+		label="Comp-Clamp",
+		steps=[
+			MOVE({4:0, 1:-10, 5:50, 14:-25, 10:10, 15:0, 11:0, 6:-30, 9:35}),
+			SLEEP(0.1),
+			MOVE({0:-10}),
+		],
+	),
+	Motion(
+		label="Comp-Open",
+		steps=[
+			CALL(lambda: bot.iklegs_move(
+				{0:(0.05,0,-0.09), 1:(0.05,0,-0.09), 2:(-0.05,0,-0.09), 3:(-0.05,0,-0.09)},
+				step_multiplier=15, speed=10, delay=0.01
+			)),
+		],
+	),
+	Motion(
+		label="IK-Reset",
+		steps=[
+			CALL(lambda: bot.iklegs_move(
+				{0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)},
+				step_multiplier=15, speed=10, delay=0.01
+			)),
+		],
+	),
+	Motion(
 		label="Sit",
 		steps=[
 			MOVE({0: -40, 4: 15, 5: -15, 1: 40}),
@@ -341,7 +376,7 @@ MOTIONS: List[Motion] = [
 		],
 	),
 	Motion(
-		label="CompOpen",
+		label="Comp-Open",
 		steps=[
 			CALL(lambda: bot.iklegs_move(
 				{0:(0.05,0,-0.09), 1:(0.05,0,-0.09), 2:(-0.05,0,-0.09), 3:(-0.05,0,-0.09)},
@@ -350,18 +385,45 @@ MOTIONS: List[Motion] = [
 		],
 	),
 	Motion(
-		label="CompSet",
+		label="Comp-Clamp",
 		steps=[
 			MOVE({4:0, 1:-10, 5:50, 14:-25, 10:10, 15:0, 11:0, 6:-30, 9:35}),
 			SLEEP(0.1),
 			MOVE({0:-10}),
 		],
 	),
-	#then scooping
-	#then sewing?
-	#then off to fetal immeditialy
 	Motion(
-		label="CompReset",
+		label="Comp-Scoop",
+		steps=[
+			MOVE({9:-35}),
+			SLEEP(0.1),
+			MOVE({11:-100, 15:80}),
+			SLEEP(0.2),
+			REPEAT(
+				3,
+				MOVE({15:-80, 11:20}),
+				SLEEP(0.15),
+				MOVE({15:80, 11:-20}),
+				SLEEP(0.15),
+			),
+			SLEEP(0.2),
+			MOVE({11:100,15:-80}),
+			SLEEP(0.1),
+			MOVE({9:35}),
+		],
+	),
+	#then sewing?
+	Motion(
+		label="Comp-Open",
+		steps=[
+			CALL(lambda: bot.iklegs_move(
+				{0:(0.05,0,-0.09), 1:(0.05,0,-0.09), 2:(-0.05,0,-0.09), 3:(-0.05,0,-0.09)},
+				step_multiplier=15, speed=10, delay=0.01
+			)),
+		],
+	),
+	Motion(
+		label="IK-Reset",
 		steps=[
 			CALL(lambda: bot.iklegs_move(
 				{0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)},
@@ -369,9 +431,53 @@ MOTIONS: List[Motion] = [
 			)),
 		],
 	),
-	#Then standing to sitting
-	#Laying down to hide
-	#Say hello again
+	Motion(
+		label="Fetal",
+		steps=[
+			MOVE({15:-40, 0:-40, 14:40, 1:40, 8:-30, 9:30, 6:-30, 7:30}),
+		],
+	),
+	Motion(
+		label="IK-Reset-Sit",
+		steps=[
+			CALL(lambda: bot.iklegs_move(
+				{0:(0,0,0), 1:(0,0,0), 2:(0,0,0), 3:(0,0,0)},
+				step_multiplier=15, speed=10, delay=0.01
+			)),
+			MOVE({0: -40, 4: 15, 5: -15, 1: 40}),
+			MOVE({15: 90, 14: -90, 11: -60, 10: 60, 0: 10, 1: -10}),
+		],
+	),
+	Motion(
+		label="Hiding",
+		steps=[
+			MOVE({4: -40, 5: 40, 15: -130, 11:60, 10:-60, 14:130, 8:40, 9:-40}),
+			MOVE({11:-130, 10:130}),
+		],
+	),
+	Motion(
+		label="Showing",
+		steps=[
+			MOVE({11:130, 10:-130}),
+			MOVE({4: 40, 5: -40, 15: 130, 11:-60, 10:60, 14:-130, 8:-40, 9:40}),
+		],
+	),
+	Motion(
+		label="Wave",
+		steps=[
+			MOVE({10: 50, 14: 80, 8: -20}),
+			REPEAT(
+				4,
+				MOVE({14: 20, 8: 40}),
+				SLEEP(0.15),
+				MOVE({14: -20, 8: -40}),
+				SLEEP(0.15),
+			),
+			MOVE({10: -50, 14: -40, 8: 20}),
+			MOVE({14: -40}),
+		],
+	),
+	
 	# Conclusion
 ]
 
