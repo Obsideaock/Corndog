@@ -509,96 +509,131 @@ is_turning_right = False
 is_turning_left  = False
 is_amble = False
 is_live_ik   = False
+is_limp = False
+is_fetal = False
 prev_roll, prev_pitch = None, None
 
-# Tkinter GUI
 def create_gui():
 	walkspeed = 15
-	global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling, is_handstand, is_amble, is_live_ik, prev_roll, prev_pitch
+	global walk_button, is_walking, sit_button, is_sitting, kneel_button, is_kneeling
+	global is_handstand, is_amble, is_live_ik, prev_roll, prev_pitch
+	global turn_left_button, turn_right_button, back_button
+	global limp_button, unlimp_button, seizure_button
+	global companion_flow_button, compan_shake_button
+
 	window = tk.Tk()
 	window.title("Robot Control")
 
-	# Prefer full screen (Esc to exit)
+	# Fullscreen (Esc toggles out)
 	window.attributes("-fullscreen", True)
 	window.bind("<Escape>", lambda e: window.attributes("-fullscreen", False))
 
-	# Root frame using grid (so hiding uses grid_remove and keeps slot memory)
+	# A container frame that fills the window
 	root = tk.Frame(window)
-	root.grid(sticky="nsew")
+	root.grid(row=0, column=0, sticky="nsew")
 	window.rowconfigure(0, weight=1)
 	window.columnconfigure(0, weight=1)
-	root.columnconfigure(0, weight=1)
 
-	# Keep references in creation order (main buttons only)
-	buttons_order = []         # list of (button, row) for MAIN MENU ONLY
-	next_row = [0]             # simple counter in a list to mutate in closure
+	# --- Responsive sizing -------------------------------------------------
+	# We’ll compute font + padding from actual screen size.
+	window.update_idletasks()
+	sw = max(640, window.winfo_screenwidth())
+	sh = max(480, window.winfo_screenheight())
 
-	# Context-only buttons: create but DO NOT grid initially
-	context_buttons = []       # just the widget list
-	context_pos = {}           # widget -> row (so we can grid later with the right geometry)
+	# Font size roughly scales with min(screen dims)
+	# Tune these numbers if you want bigger/smaller.
+	base = min(sw, sh)
+	font_size = max(10, int(base * 0.025))      # ~2.5% of min dimension
+	padx = max(8, int(sw * 0.010))              # 1% of width
+	pady = max(6, int(sh * 0.008))              # 0.8% of height
 
-	def make_button(text, command, *, include_in_show_all=True):
-		"""Create a button. If include_in_show_all is False, do NOT grid it now (no initial flash)."""
-		r = next_row[0]
-		next_row[0] += 1
-		b = tk.Button(root, text=text, command=command)
+	btn_font = ("Helvetica", font_size, "bold")
 
-		if include_in_show_all:
-			# main menu button: grid now
-			b.grid(row=r, column=0, sticky="ew", padx=12, pady=6)
-			buttons_order.append((b, r))
+	# Decide how many columns the main menu grid should use based on width.
+	# (More width -> more columns -> fewer rows -> less chance of offscreen.)
+	if sw >= 2400:
+		MAIN_COLS = 6
+	elif sw >= 1800:
+		MAIN_COLS = 5
+	elif sw >= 1300:
+		MAIN_COLS = 4
+	elif sw >= 900:
+		MAIN_COLS = 3
+	else:
+		MAIN_COLS = 2
+
+	# How many columns to use for context-only views (Sit / Companion stages).
+	# Keeping this lower makes large buttons.
+	CONTEXT_COLS = min(3, MAIN_COLS)
+
+	# --- Button bookkeeping ------------------------------------------------
+	# We store buttons in two groups:
+	# 1) main_buttons: participate in the main grid menu
+	# 2) context_buttons: not shown in main menu; used by show_only(...)
+	main_buttons = []      # list of tk.Button
+	context_buttons = []   # list of tk.Button
+
+	def make_button(text, command, *, include_in_main=True):
+		b = tk.Button(
+			root,
+			text=text,
+			command=command,
+			font=btn_font,
+			wraplength=int(sw / MAIN_COLS * 0.85),  # allow wrapping for long labels
+			justify="center"
+		)
+		# Ensure consistent feel
+		b.configure(padx=padx, pady=pady)
+
+		if include_in_main:
+			main_buttons.append(b)
 		else:
-			# context-only: don't grid yet; store intended row
 			context_buttons.append(b)
-			context_pos[b] = r
 		return b
 
-	# Helpers
-	def hide_all_main():
-		for b, _ in buttons_order:
-			if b.winfo_ismapped():
-				b.grid_remove()
+	def _grid_buttons(buttons, cols):
+		"""
+		Grid a given list of buttons in a uniform table layout.
+		Clears any existing grid placements first.
+		"""
+		# remove all current placements
+		for w in root.grid_slaves():
+			w.grid_remove()
 
-	def hide_all_context():
-		for b in context_buttons:
-			if b.winfo_ismapped():
-				b.grid_remove()
+		# configure columns to share space
+		for c in range(cols):
+			root.columnconfigure(c, weight=1, uniform="btncols")
 
-	def _grid_context_button(b):
-		"""Place a context button using its stored row + layout."""
-		r = context_pos.get(b, 0)
-		b.grid(row=r, column=0, sticky="ew", padx=12, pady=6)
+		# give rows weight too so layout expands nicely
+		# (we’ll set weights for rows we actually use)
+		needed_rows = (len(buttons) + cols - 1) // cols
+		for r in range(needed_rows):
+			root.rowconfigure(r, weight=1, uniform="btnrows")
+
+		# place buttons
+		for i, b in enumerate(buttons):
+			r = i // cols
+			c = i % cols
+			b.grid(row=r, column=c, sticky="nsew", padx=padx, pady=pady)
+
+		window.update_idletasks()
 
 	def show_all():
-		"""Restore the main menu only (never shows context buttons)."""
-		for b, _ in buttons_order:
-			if not b.winfo_ismapped():
-				b.grid()
-		# explicitly keep context buttons hidden
-		hide_all_context()
-		window.update_idletasks()
+		"""Show main menu grid (only main buttons)."""
+		_grid_buttons(main_buttons, MAIN_COLS)
 
 	def show_only(*widgets):
-		"""Hide everything, then show only the provided widgets."""
-		hide_all_main()
-		hide_all_context()
-		for w in widgets:
-			# If it's a context button (never gridded before), grid with stored row/opts
-			if w in context_pos:
-				_grid_context_button(w)
-			else:
-				if not w.winfo_ismapped():
-					w.grid()
-		window.update_idletasks()
+		"""Show only the specified widgets in a grid (context view)."""
+		# Preserve ordering passed in
+		_grid_buttons(list(widgets), CONTEXT_COLS)
 
+	# --- Original helpers, adapted ----------------------------------------
 	def hide_others(active_btn):
-		"""Legacy helper used by movement toggles: hide all except active_btn."""
-		for b, _ in buttons_order:
-			if b is not active_btn and b.winfo_ismapped():
-				b.grid_remove()
-		# context buttons also off in these modes
-		hide_all_context()
-		window.update_idletasks()
+		"""
+		Legacy helper used by movement toggles: show ONLY the active button
+		so user has a big Stop button.
+		"""
+		show_only(active_btn)
 
 	# ------------------- Callbacks -------------------
 	def ambletest():
@@ -843,7 +878,6 @@ def create_gui():
 			lcd.clear()
 			show_all()
 
-	# ---- Sit context: Shake + Unsit ----
 	def arm_shake():
 		move_motors({10: 110, 14: -80}, speed_multiplier=25)
 		for _ in range(4):
@@ -853,9 +887,8 @@ def create_gui():
 			time.sleep(.15)
 		move_motors({10: -110, 14: 120}, speed_multiplier=25)
 		move_motors({14: -40}, speed_multiplier=25)
-		# keep sit-context visible after shaking
-		show_only(shake_arm_button, unsit_button, wave_button)
-		
+		show_only(shake_arm_button, unsit_button, wave_button, limp_button, seizure_button)
+
 	def wave():
 		move_motors({10: 50, 14: 80, 8:-20}, speed_multiplier=25)
 		for _ in range(4):
@@ -865,8 +898,28 @@ def create_gui():
 			time.sleep(.15)
 		move_motors({10: -50, 14: -40, 8:20}, speed_multiplier=25)
 		move_motors({14: -40}, speed_multiplier=25)
-		# keep sit-context visible after shaking
-		show_only(shake_arm_button, unsit_button, wave_button)
+		show_only(shake_arm_button, unsit_button, wave_button, limp_button, seizure_button)
+		
+	def fetal():
+		global is_fetal
+		if not is_fetal:
+			is_fetal = True
+			lcd.lcd("fetal mode")
+			window.update()
+			move_motors({15: -40, 0: -40, 14: 40, 1: 40, 8:-30, 9:30, 6:-30, 7:30})
+			show_only(elderly_button)
+		else:
+			show_only(elderly_button)
+			
+	def elder():
+		global is_fetal
+		if is_fetal:
+			is_fetal = False
+			lcd.lcd("Growing Up")
+			move_motors({8:30, 9:-30, 6:30, 7:-30})
+			move_motors({15: 40, 0: 40, 14: -40, 1: -40})
+			lcd.clear()
+			show_all()
 
 	def unsit():
 		global is_sitting
@@ -884,22 +937,57 @@ def create_gui():
 		if not is_sitting:
 			is_sitting = True
 			lcd.lcd("Sitting")
-			sit_button.config(text="Sit")  # label stays as Sit
+			sit_button.config(text="Sit")
 			window.update()
-			# take the sitting pose
 			move_motors({0: -40, 4: 15, 5: -15, 1: 40})
 			move_motors({15:90, 14:-90, 11:-60, 10:60, 0:10, 1:-10})
-			# show ONLY the two context buttons (Sit itself is hidden)
-			show_only(shake_arm_button, unsit_button, wave_button)
+			show_only(shake_arm_button, unsit_button, wave_button, limp_button, seizure_button)
 		else:
-			# already sitting → just ensure the context view is active
-			show_only(shake_arm_button, unsit_button, wave_button)
+			show_only(shake_arm_button, unsit_button, wave_button, limp_button, seizure_button)
 
 	def dance():
 		lcd.lcd("Dancing")
 		for _ in range(4):
-			move_motors({15: -30, 0: -30, 14: 30, 1: 30})
-			move_motors({15: 30, 0: 30, 14: -30, 1: -30})
+			iklegs_move({0:(0.0,0.0,+0.015),1:(0.0,0.0,-0.015),2:(0.0,0.0,+0.015),3:(0.0,0.0,-0.015)}, step_multiplier=10, speed=0.005, delay=0.0)
+			time.sleep(0.3)
+			iklegs_move({0:(0.0,0.0,-0.015),1:(0.0,0.0,+0.015),2:(0.0,0.0,-0.015),3:(0.0,0.0,+0.015)}, step_multiplier=10, speed=0.005, delay=0.0)
+			time.sleep(0.3)
+		iklegs_move({0:(0.0,0.0,0.0,),1:(0.0,0.0,0.0),2:(0.0,0.0,0.0),3:(0.0,0.0,0.0)}, step_multiplier=10, speed=20, delay=0.0)
+		lcd.clear()
+
+	def limp():
+		global is_limp, is_sitting
+		if not is_sitting:
+			return
+		if is_limp:
+			show_only(unlimp_button)
+			return
+		is_limp = True
+		lcd.lcd("Going Limp")
+		move_motors({10:95, 11:-95, 4:-50, 5:50})
+		lcd.clear()
+		show_only(unlimp_button)
+
+	def unlimp():
+		global is_limp, is_sitting
+		if not is_sitting:
+			return
+		if not is_limp:
+			show_only(shake_arm_button, unsit_button, wave_button, limp_button, seizure_button)
+			return
+		lcd.lcd("Unlimping")
+		move_motors({10:-95, 11:95, 4:50, 5:-50})
+		lcd.clear()
+		is_limp = False
+		show_only(shake_arm_button, unsit_button, wave_button, limp_button, seizure_button)
+
+	def seizure():
+		lcd.lcd("Seizing")
+		move_motors({0:40, 1:-40, 4:40, 5:40, 6:40, 7:-40, 8:40, 9:-40, 10:40, 11:40, 14:40, 15:-60}, speed_multiplier=20)
+		time.sleep(2)
+		move_motors({6:-40, 7:40, 8:-40, 9:40})
+		time.sleep(0.5)
+		move_motors({0:-40, 1:40, 4:-40, 5:-40, 10:-40, 11:-40, 14:-40, 15:60})
 		lcd.clear()
 
 	def jump():
@@ -1000,24 +1088,19 @@ def create_gui():
 
 	# ---------------- Companion flow (single-button stages) -----------------
 	def companion_start():
-		"""Main-menu button action → then show single 'Companion 2' button."""
 		lcd.lcd("Companion: Open")
-		# tiny friendly nod
 		iklegs_move({0:(0.05,0,-0.09),1:(0.05,0,-0.09),2:(-0.05,0,-0.09),3:(-0.05, 0,-0.09)}, step_multiplier=15, speed=10, delay=0.01)
-		# prepare stage button
 		companion_flow_button.config(text="Companion 2", command=companion_stage2)
 		show_only(companion_flow_button)
 
 	def companion_stage2():
-		"""Second stage → gentle side sway."""
 		lcd.lcd("Companion: Set")
 		move_motors({4:0, 1:-10, 5:50, 14:-25, 10:10, 15:0, 11:0, 6:-30, 9:35})
 		time.sleep(0.1)
 		move_motors({0:-10})
 		companion_flow_button.config(text="Companion 3", command=companion_stage3)
-		# Show BOTH: the normal next-stage button and the new Shake button
 		show_only(companion_flow_button, compan_shake_button)
-		
+
 	def compan_shake():
 		lcd.lcd("Companion: Shake")
 		move_motors({9:-35})
@@ -1033,26 +1116,23 @@ def create_gui():
 		move_motors({11:100})
 		time.sleep(0.1)
 		move_motors({9:35})
-		# keep the companion-stage context visible after shaking
 		show_only(companion_flow_button, compan_shake_button)
 
 	def companion_stage3():
-		"""Third stage → quick happy tap."""
 		lcd.lcd("Companion: Closed")
 		iklegs_move({0:(0.05,0,-0.09),1:(0.05,0,-0.09),2:(-0.05,0,-0.09),3:(-0.05, 0,-0.09)}, step_multiplier=15, speed=10, delay=0.01)
 		companion_flow_button.config(text="Reset", command=companion_reset)
 		show_only(companion_flow_button)
 
 	def companion_reset():
-		"""Reset action → return to main menu."""
 		lcd.lcd("Companion: Reset")
 		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=15, speed=10, delay=0.01)
 		lcd.clear()
 		show_all()
 
-	# --- Buttons (auto-row) -------------------------------------------------
+	# --- Buttons -----------------------------------------------------------
 	stand_button       = make_button("Stand Up", stand_up)
-	amble_button       = make_button("Test amble", ambletest)
+	amble_button       = make_button("Test Amble", ambletest)
 	walk_button        = make_button("Start Walking", walk)
 	back_button        = make_button("Walk Backward", walk_backwards)
 	turn_right_button  = make_button("Turn Right", turn_right)
@@ -1064,37 +1144,26 @@ def create_gui():
 	jump_button        = make_button("Jump", jump)
 	imulive_button     = make_button("Show Live IMU", show_live_imu)
 	liveik_button      = make_button("Start Live IK", toggle_live_ik)
-	# New: Companion main-menu button
+	seizure_button     = make_button("Seizure", seizure)
 	companion_button   = make_button("Companion", companion_start)
-
-	# Sit-context buttons (NOT part of main menu; exclude from show_all)
-	shake_arm_button   = make_button("Shake", arm_shake, include_in_show_all=False)
-	wave_button        = make_button("Wave", wave, include_in_show_all=False)
-	unsit_button       = make_button("Unsit", unsit, include_in_show_all=False)
-
-	# New: the single stage button used for Companion 2 → 3 → Reset
-	companion_flow_button = make_button("Companion 2", companion_stage2, include_in_show_all=False)
-
-	# NEW: Companion flow “Shake” button shown after Stage 2
-	compan_shake_button = make_button("Shake", compan_shake, include_in_show_all=False)
-
 	lie_button         = make_button("Lie Down", power_off)
+	fetal_button       = make_button("Fetal Mode", fetal)
+	elderly_button     = make_button("Elderly Mode", elder, include_in_main=False)
 
-	# New: Companion main-menu button
-	companion_button   = make_button("Companion", companion_start)
+	# Sit-context buttons (exclude from main menu)
+	shake_arm_button   = make_button("Shake", arm_shake, include_in_main=False)
+	wave_button        = make_button("Wave", wave, include_in_main=False)
+	unsit_button       = make_button("Unsit", unsit, include_in_main=False)
+	limp_button        = make_button("Limp", limp, include_in_main=False)
+	unlimp_button      = make_button("Unlimp", unlimp, include_in_main=False)
+	#sadness_button     = make_button("Sadness", sadness, include_in_main=False)
 
-	# Sit-context buttons (NOT part of main menu; exclude from show_all)
-	shake_arm_button   = make_button("Shake", arm_shake, include_in_show_all=False)
-	unsit_button       = make_button("Unsit", unsit, include_in_show_all=False)
+	# Companion flow button(s) (exclude from main)
+	companion_flow_button = make_button("Companion 2", companion_stage2, include_in_main=False)
+	compan_shake_button   = make_button("Shake", compan_shake, include_in_main=False)
 
-	# New: the single stage button used for Companion 2 → 3 → Reset
-	companion_flow_button = make_button("Companion 2", companion_stage2, include_in_show_all=False)
-
-	lie_button         = make_button("Lie Down", power_off)
-	# -----------------------------------------------------------------------
-
-	# Ensure context buttons start hidden (they were never gridded, but this is harmless)
-	hide_all_context()
+	# Show the main menu grid at start
+	show_all()
 
 	window.mainloop()
 
