@@ -3,3 +3,4 @@ drivers/
 __pycache__/
 robo/
 .goutputstream-*
+.git_corrupt

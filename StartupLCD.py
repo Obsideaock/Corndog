@@ -41,10 +41,10 @@ PRESENCE_PORT = 65431
 STEAMDECK_MODE_CMD = ["/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python", "/home/Corndog/Desktop/RobotOperationScripts/Corndog/SteamDeckCommunication.py"]  # <-- CHANGE THIS
 
 # What to launch when Flipper is present (your flipper menu script)
-FLIPPER_MODE_CMD = ["/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python", "/home/Corndog/Desktop/RobotOperationScripts/Corndog/FlipperTed.py"]  # <-- CHANGE THIS
+FLIPPER_MODE_CMD = ["/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python", "/home/Corndog/Desktop/RobotOperationScripts/Corndog/Flipper2.py"]  # <-- CHANGE THIS
 
 # Flipper name match (same idea as your evdev script)
-FLIPPER_NAME_MATCHES = ("flipper", "keynote", "control")
+FLIPPER_NAME_MATCHES = ("flipper", "keynote", "control", "laon")
 
 # Polling / UI timing
 POLL_S = 0.5

@@ -289,18 +289,11 @@ BODY_LEN = 0.186  # m
 BODY_WID = 0.078  # m
 L1, L2, L3 = 0.055, 0.1075, 0.130
 
-LEG_TRANSFORMS = {
-	0: t_leftfront,  1: t_rightfront,
-	2: t_leftback,   3: t_rightback,
-}
-
-# 2) per-leg sign+offset and channel wiring
-MAPPING = {
-	0: {1:{'sign':+1,'offset':-143}, 2:{'sign':+1,'offset':  122+5}, 3:{'sign':+1,'offset': -86+242}},
-	1: {1:{'sign':-1,'offset':228},  2:{'sign':-1,'offset':  39+78}, 3:{'sign':-1,'offset': 305-140}},
-	2: {1:{'sign':-1,'offset':406},  2:{'sign':+1,'offset':  150}, 3:{'sign':+1,'offset':  162}},
-	3: {1:{'sign':+1,'offset':35},   2:{'sign':-1,'offset':  89},  3:{'sign':-1,'offset': 161}},
-}
+# ===========================================================================
+# Decoupled IK + Mirror approach
+# Right legs (1, 3) use decoupled IK (q1 from y only, q2/q3 from x/z only).
+# Left legs (0, 2) mirror negated servo deltas from their paired right leg.
+# ===========================================================================
 
 CHANNEL_MAP = {
 	0:{1:9,  2:11, 3:15},
@@ -309,39 +302,71 @@ CHANNEL_MAP = {
 	3:{1:7,  2:5,  3:1 },
 }
 
-INV_LEG = {}
-ht_body0 = homog_transxyz(0,0,0) @ homog_rotxyz(0,0,0)
-for leg_idx, tf_fn in LEG_TRANSFORMS.items():
-	T = tf_fn(ht_body0, BODY_LEN, BODY_WID)
-	INV_LEG[leg_idx] = ht_inverse(T)
+_MAPPING_RIGHT = {
+	1: {1:{'sign':-1,'offset':228}, 2:{'sign':-1,'offset':112}, 3:{'sign':-1,'offset':165}},
+	3: {1:{'sign':+1,'offset':35},  2:{'sign':-1,'offset':89},  3:{'sign':-1,'offset':161}},
+}
 
-def to_user_angles(leg_idx, theta_rads):
-	cfg = MAPPING[leg_idx]
+_MIRROR_PAIR = {0: 1, 2: 3}
+_MIRROR_SIGN = {1: +1, 2: -1, 3: -1}
+
+_INV_RIGHT = {}
+_ht_body0 = homog_transxyz(0,0,0) @ homog_rotxyz(0,0,0)
+for _ri, _tf_fn in {1: t_rightfront, 3: t_rightback}.items():
+	_T = _tf_fn(_ht_body0, BODY_LEN, BODY_WID)
+	_INV_RIGHT[_ri] = ht_inverse(_T)
+
+_RIGHT_CFG = {
+	1: {'base': ( BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/3.5*5/4, 3/2, 3/3.75)},
+	3: {'base': (-BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/2.5,     3/2, 3/3.75)},
+}
+
+_HOME_HIP = {}
+_RIGHT_HOME_SERVO = {}
+for _ri in (1, 3):
+	_bx, _by, _bz = _RIGHT_CFG[_ri]['base']
+	_P = _INV_RIGHT[_ri] @ np.array([_bx, _by, _bz, 1.0])
+	_HOME_HIP[_ri] = (float(_P[0]), float(_P[1]), float(_P[2]))
+	_q = ikine(float(_P[0]), float(_P[1]), float(_P[2]), L1, L2, L3, legs12=None)
+	_cfg = _MAPPING_RIGHT[_ri]
+	for _j in (1, 2, 3):
+		_ch = CHANNEL_MAP[_ri][_j]
+		_RIGHT_HOME_SERVO[_ch] = _cfg[_j]['sign'] * (_q[_j-1] * 180 / math.pi) + _cfg[_j]['offset']
+
+
+def _decoupled_ikine(x4, y4, z4, l1, l2, l3, x4_home, y4_home):
+	"""Fully decoupled IK: q1 from y only, q2/q3 from x/z only."""
+	r_sq = x4_home**2 + y4**2 - l1**2
+	if r_sq < 0:
+		return None
+	q1 = math.atan2(y4, x4_home) + math.atan2(math.sqrt(r_sq), -l1)
+
+	r_sq_sag = x4**2 + y4_home**2 - l1**2
+	if r_sq_sag < 0:
+		return None
+	D = (r_sq_sag + z4**2 - l2**2 - l3**2) / (2 * l2 * l3)
+	if abs(D) > 1.0:
+		return None
+	q3 = math.atan2(-math.sqrt(1 - D**2), D)
+	q2 = math.atan2(z4, math.sqrt(r_sq_sag)) - math.atan2(l3 * math.sin(q3), l2 + l3 * math.cos(q3))
+	return (q1, q2, q3)
+
+
+def _to_user_right(ri, theta_rads):
+	cfg = _MAPPING_RIGHT[ri]
 	return tuple(
-		cfg[j]['sign'] * (theta_rads[j-1] * 180/math.pi) + cfg[j]['offset']
-		for j in (1,2,3)
+		cfg[j]['sign'] * (theta_rads[j-1] * 180 / math.pi) + cfg[j]['offset']
+		for j in (1, 2, 3)
 	)
 
-# ---- Nearest-reachable IK wrapper -----------------------------------------
-def solve_ik_or_project(x_h, y_h, z_h, L1, L2, L3, legs12, *, max_up=2.0, min_down=0.1):
-	"""
-	Try IK at (x_h, y_h, z_h). If it fails (unreachable), search for the nearest
-	scale factor 's' so that IK(x*s, y*s, z*s) succeeds. The search is symmetric
-	around s=1 (1, 0.98, 1.02, 0.96, 1.04, ...), which keeps the foot as close
-	as possible to the requested point while staying inside limits.
 
-	Returns: (q1, q2, q3, used_xyz_tuple, used_scale) or (None, None, None, None, None) on failure.
-	"""
+def _solve_decoupled(x_h, y_h, z_h, l1, l2, l3, x4_home, y4_home, *, max_up=2.0, min_down=0.1):
+	"""Decoupled IK with reach-safe projection fallback."""
 	vx, vy, vz = float(x_h), float(y_h), float(z_h)
+	result = _decoupled_ikine(vx, vy, vz, l1, l2, l3, x4_home, y4_home)
+	if result is not None:
+		return result[0], result[1], result[2], (vx, vy, vz), 1.0
 
-	# First, try the exact target.
-	try:
-		q1, q2, q3 = ikine(vx, vy, vz, L1, L2, L3, legs12=legs12)
-		return q1, q2, q3, (vx, vy, vz), 1.0
-	except ValueError:
-		pass
-
-	# Build a symmetric scale sequence around 1.0 (closest first).
 	steps = [k * 0.02 for k in range(1, int(max(1, max_up / 0.02)))]
 	scales = []
 	for d in steps:
@@ -352,136 +377,77 @@ def solve_ik_or_project(x_h, y_h, z_h, L1, L2, L3, legs12, *, max_up=2.0, min_do
 		if s2 <= max_up:
 			scales.append(s2)
 
-	# Try each scaled point, picking the first that works.
 	for s in scales:
 		xs, ys, zs = vx * s, vy * s, vz * s
-		try:
-			q1, q2, q3 = ikine(xs, ys, zs, L1, L2, L3, legs12=legs12)
-			# Slight inward nudge if we had to expand outward to avoid boundary jitter
+		result = _decoupled_ikine(xs, ys, zs, l1, l2, l3, x4_home, y4_home)
+		if result is not None:
 			if s > 1.0:
 				s *= 0.995
 				xs, ys, zs = vx * s, vy * s, vz * s
-			return q1, q2, q3, (xs, ys, zs), s
-		except ValueError:
-			continue
+			return result[0], result[1], result[2], (xs, ys, zs), s
 
-	# Could not find any reachable scale along this ray.
 	return None, None, None, None, None
 
-def move_single_leg_body_frame(leg_idx, x_body, y_body, z_body, safety=False, speed=10):
-	"""
-	Move ONE leg to (x_body, y_body, z_body) in the BODY frame.
-	Internally transforms into hip frame, does IK, then calls move_motors.
-	"""
-	# A) Build the homogeneous body-frame point
-	P_body = np.array([x_body, y_body, z_body, 1.0])
-
-	# B) Transform into hip frame via precomputed inverse
-	P_hip = INV_LEG[leg_idx] @ P_body
-	x_h, y_h, z_h = P_hip[:3]
-
-	# C) IK in hip frame with reach-safe projection
-	front = (not (leg_idx in (0,1))) ^ (leg_idx in (2,3))
-	q = solve_ik_or_project(x_h, y_h, z_h, L1, L2, L3, front)
-	if q[0] is None:
-		# Skip this leg this call if truly unreachable along the ray
-		return
-	q1, q2, q3, (x_used, y_used, z_used), s_used = q
-
-	# D) Convert to user-space servo angles
-	user_deg = to_user_angles(leg_idx, (q1, q2, q3))
-
-	# E) Build the channel→delta map
-	movements = {}
-	for joint, tgt in enumerate(user_deg, start=1):
-		ch = CHANNEL_MAP[leg_idx][joint]
-		movements[ch] = tgt - servo_angles[ch]
-
-	# F) Either print (safety) or actually move
-	if safety:
-		print(f"Leg {leg_idx} planned deltas: {movements} (scaled by {s_used:.3f})")
-	else:
-		move_motors(movements, speed_multiplier=speed)
 
 def iklegs_move(leg_offsets, step_multiplier=10, speed=10, delay=0.01):
 	"""
 	Move multiple legs together along straight-line paths in body-space.
-
-	leg_offsets: dict mapping leg_idx → (dx_u, dy_u, dz_u)
-	  where (0,0,0) means “home” and units are the same as your IKTEST.
-	step_multiplier: how many interpolation steps per unit of offset
-	speed: higher → fewer total steps
-	delay: pause between each micro-step (s)
+	Right legs compute via decoupled IK; left legs mirror from paired right leg.
 	"""
 	def clamp(a):
 		return max(0, min(270, a))
 
-	# per-leg home + scale from IKTEST
-	leg_cfg = {
-		0: {'base': ( (BODY_LEN/2),  BODY_WID/2,  -0.16),
-			'scale': ( 3/3.5*5/5.5,       3/3.5,     3/2.5 )},
-		1: {'base': ( (BODY_LEN/2), -BODY_WID/2, -0.16),
-			'scale': (-3/3.5*5/4,       3/2,       3/3.75)},
-		2: {'base': (-(BODY_LEN/2),  BODY_WID/2,  -0.16),
-			'scale': ( 3/4,             3/3.5,     3/2.5 )},
-		3: {'base': (-(BODY_LEN/2), -BODY_WID/2,  -0.16),
-			'scale': (-3/2.5,          3/2,       3/3.75)},
-	}
-
-	# 1) figure out how many micro-steps
 	max_steps = 0
 	for dx, dy, dz in leg_offsets.values():
 		max_steps = max(max_steps,
 						abs(dx)*step_multiplier,
 						abs(dy)*step_multiplier,
 						abs(dz)*step_multiplier)
-	
-	MIN_STEPS = 1  # ensures smoothness even on tiny moves
+
+	MIN_STEPS = 1
 	steps = max(MIN_STEPS, math.ceil(max_steps / max(1e-9, speed)))
 
-	# 2) per-leg per-step increments in user-space
 	incs = {
 		leg: (dx/steps, dy/steps, dz/steps)
 		for leg, (dx, dy, dz) in leg_offsets.items()
 	}
 
-	# 3) loop through each micro-step
 	for s in range(1, steps+1):
-		# combined delta-map for all servos this step
 		step_movements = {}
 
 		for leg_idx, (inc_x, inc_y, inc_z) in incs.items():
-			# current offset in user-space
 			ux = inc_x * s
 			uy = inc_y * s
 			uz = inc_z * s
 
-			cfg = leg_cfg[leg_idx]
-			# map into body coords
+			ri = leg_idx if leg_idx in (1, 3) else _MIRROR_PAIR[leg_idx]
+			cfg = _RIGHT_CFG[ri]
 			xb = cfg['base'][0] + ux * cfg['scale'][0]
 			yb = cfg['base'][1] + uy * cfg['scale'][1]
 			zb = cfg['base'][2] + uz * cfg['scale'][2]
 
-			# transform → hip, solve IK (reach-safe)
 			P_body = np.array([xb, yb, zb, 1.0])
-			P_hip  = INV_LEG[leg_idx] @ P_body
-			front  = (not (leg_idx in (0,1))) ^ (leg_idx in (2,3))
+			P_hip = _INV_RIGHT[ri] @ P_body
+			hx, hy, _ = _HOME_HIP[ri]
 
-			q = solve_ik_or_project(P_hip[0], P_hip[1], P_hip[2], L1, L2, L3, front)
+			q = _solve_decoupled(P_hip[0], P_hip[1], P_hip[2], L1, L2, L3, hx, hy)
 			if q[0] is None:
-				# Skip this leg for this micro-step if nothing reachable
 				continue
-			q1, q2, q3, (xh_used, yh_used, zh_used), s_used = q
+			q1, q2, q3, _, _ = q
+			user_deg = _to_user_right(ri, (q1, q2, q3))
 
-			# convert to servo angles
-			user_deg = to_user_angles(leg_idx, (q1, q2, q3))
+			if leg_idx in (1, 3):
+				for joint, tgt in enumerate(user_deg, start=1):
+					ch = CHANNEL_MAP[leg_idx][joint]
+					step_movements[ch] = tgt - servo_angles[ch]
+			else:
+				for j in (1, 2, 3):
+					ch_R = CHANNEL_MAP[ri][j]
+					ch_L = CHANNEL_MAP[leg_idx][j]
+					delta_R = user_deg[j - 1] - _RIGHT_HOME_SERVO[ch_R]
+					target_L = servo_home[ch_L] + _MIRROR_SIGN[j] * delta_R
+					step_movements[ch_L] = target_L - servo_angles[ch_L]
 
-			# assemble this leg’s channel→delta
-			for joint, tgt in enumerate(user_deg, start=1):
-				ch = CHANNEL_MAP[leg_idx][joint]
-				step_movements[ch] = tgt - servo_angles[ch]
-
-		# 4) apply all those little deltas in one go
 		for ch, delta in step_movements.items():
 			new = clamp(servo_angles[ch] + delta)
 			servos[ch].angle = new
@@ -863,17 +829,19 @@ def create_gui():
 			handstand_button.config(text="Back Down")
 			window.update()
 			hide_others(handstand_button)
-			move_motors({0: -40, 4: 10, 5: -10, 1: 40})
-			move_motors({15: 85, 11: 0, 10: -0, 14: -85})
+			move_motors({0: -50, 4: 20, 5: -20, 1: 50})
+			move_motors({15: 85, 11: -10, 10: 10, 14: -85})
 			move_motors({0: 50, 1: -50})
+			move_motors({11:25, 10:-25})
 		else:
 			is_handstand = False
 			lcd.lcd("Standing Down")
 			handstand_button.config(text="Handstand")
 			window.update()
+			move_motors({11:-25, 10:25})
 			move_motors({0: -10, 1: 10})
-			move_motors({15: -85, 11: -0, 10: 0, 14: 85, 0: -40, 1: 40})
-			move_motors({0: 40, 4: -10, 5: 10, 1: -40})
+			move_motors({15: -85, 11: 10, 10: -10, 14: 85, 0: -50, 1: 50})
+			move_motors({0: 40, 4: -20, 5: 20, 1: -40})
 			stand_up()
 			lcd.clear()
 			show_all()
@@ -992,12 +960,12 @@ def create_gui():
 
 	def jump():
 		lcd.lcd("Charging jump")
-		iklegs_move({0:(0,0,0.03),1:(0,0,0.03),2:(0,0,0.03),3:(0,0,0.03)}, step_multiplier=20, speed=0.05)
+		iklegs_move({0:(0,0,0.05),1:(0,0,0.05),2:(0,0,0.05),3:(0,0,0.05)}, step_multiplier=20, speed=0.05)
 		time.sleep(1)
 		lcd.lcd("Jumping")
-		iklegs_move({0:(0,0,-0.03),1:(0,0,-0.03),2:(0,0,-0.03),3:(0,0,-0.03)}, step_multiplier=10, speed=50, delay=0)
+		iklegs_move({0:(0,0,-0.05),1:(0,0,-0.05),2:(0,0,-0.05),3:(0,0,-0.05)}, speed=50, delay=0)
 		time.sleep(0.2)
-		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, step_multiplier=10, speed=50, delay=0)
+		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, speed=50, delay=0)
 		lcd.clear()
 
 	def show_live_imu():

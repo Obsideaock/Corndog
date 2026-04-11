@@ -265,26 +265,16 @@ def get_gravity():
 
 
 # =============================================================================
-# IK + multi-leg mover (from your main)
+# IK + multi-leg mover — Decoupled IK + Mirror approach
+# =============================================================================
+# Right legs (1, 3) use decoupled IK (q1 from y only, q2/q3 from x/z only).
+# Left legs (0, 2) mirror negated servo deltas from their paired right leg.
+# This eliminates q1 drift during z moves and height change during lateral moves.
 # =============================================================================
 
 BODY_LEN = 0.186  # meters
 BODY_WID = 0.078  # meters
 L1, L2, L3 = 0.055, 0.1075, 0.130
-
-LEG_TRANSFORMS = {
-	0: t_leftfront,
-	1: t_rightfront,
-	2: t_leftback,
-	3: t_rightback,
-}
-
-MAPPING = {
-	0: {1: {'sign': +1, 'offset':-143},    2: {'sign': +1, 'offset': 122+5},    3: {'sign': +1, 'offset': -86+242}},
-	1: {1: {'sign': -1, 'offset': 228},    2: {'sign': -1, 'offset': 39+78},    3: {'sign': -1, 'offset': 305-140}},
-	2: {1: {'sign': -1, 'offset': 406},    2: {'sign': +1, 'offset': 150},      3: {'sign': +1, 'offset': 162}},
-	3: {1: {'sign': +1, 'offset': 35},     2: {'sign': -1, 'offset': 89},       3: {'sign': -1, 'offset': 161}},
-}
 
 CHANNEL_MAP = {
 	0: {1: 9, 2: 11, 3: 15},
@@ -293,28 +283,80 @@ CHANNEL_MAP = {
 	3: {1: 7, 2: 5,  3: 1},
 }
 
-INV_LEG: Dict[int, np.ndarray] = {}
-ht_body0 = homog_transxyz(0, 0, 0) @ homog_rotxyz(0, 0, 0)
-for leg_idx, tf_fn in LEG_TRANSFORMS.items():
-	T = tf_fn(ht_body0, BODY_LEN, BODY_WID)
-	INV_LEG[leg_idx] = ht_inverse(T)
+# Right-leg-only MAPPING (left legs use mirrored deltas, not their own MAPPING)
+_MAPPING_RIGHT = {
+	1: {1: {'sign': -1, 'offset': 228}, 2: {'sign': -1, 'offset': 112}, 3: {'sign': -1, 'offset': 165}},
+	3: {1: {'sign': +1, 'offset': 35},  2: {'sign': -1, 'offset': 89},  3: {'sign': -1, 'offset': 161}},
+}
+
+# Mirror pairs: left_leg -> right_leg
+_MIRROR_PAIR = {0: 1, 2: 3}
+# How left deltas relate to right deltas per joint
+_MIRROR_SIGN = {1: 1, 2: -1, 3: -1}
+
+# Right leg transforms and config
+_INV_RIGHT: Dict[int, np.ndarray] = {}
+_ht_body0 = homog_transxyz(0, 0, 0) @ homog_rotxyz(0, 0, 0)
+for _ri, _tf_fn in {1: t_rightfront, 3: t_rightback}.items():
+	_T = _tf_fn(_ht_body0, BODY_LEN, BODY_WID)
+	_INV_RIGHT[_ri] = ht_inverse(_T)
+
+_RIGHT_CFG = {
+	1: {'base': ( BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/3.5*5/4, 3/2, 3/3.75)},
+	3: {'base': (-BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/2.5,     3/2, 3/3.75)},
+}
+
+_LEFT_SCALE = {
+	0: ( -3/3.5*5/4,  3/2,  3/3.75),   # left front
+	2: ( -3/2.5,      3/2,  3/3.75),   # left back
+}
+
+# Precompute home hip-frame coords and exact servo values for each right leg
+_HOME_HIP: Dict[int, Tuple[float, float, float]] = {}
+_RIGHT_HOME_SERVO: Dict[int, float] = {}
+for _ri in (1, 3):
+	_bx, _by, _bz = _RIGHT_CFG[_ri]['base']
+	_P = _INV_RIGHT[_ri] @ np.array([_bx, _by, _bz, 1.0])
+	_HOME_HIP[_ri] = (float(_P[0]), float(_P[1]), float(_P[2]))
+	_q = ikine(float(_P[0]), float(_P[1]), float(_P[2]), L1, L2, L3, legs12=None)
+	_cfg = _MAPPING_RIGHT[_ri]
+	for _j in (1, 2, 3):
+		_ch = CHANNEL_MAP[_ri][_j]
+		_RIGHT_HOME_SERVO[_ch] = _cfg[_j]['sign'] * (_q[_j-1] * 180 / math.pi) + _cfg[_j]['offset']
 
 
-def to_user_angles(leg_idx: int, theta_rads: Tuple[float, float, float]) -> Tuple[float, float, float]:
-	cfg = MAPPING[leg_idx]
+def _decoupled_ikine(x4, y4, z4, l1, l2, l3, x4_home, y4_home):
+	"""Fully decoupled IK: q1 from y only, q2/q3 from x/z only."""
+	r_sq = x4_home**2 + y4**2 - l1**2
+	if r_sq < 0:
+		return None
+	q1 = math.atan2(y4, x4_home) + math.atan2(math.sqrt(r_sq), -l1)
+
+	r_sq_sag = x4**2 + y4_home**2 - l1**2
+	if r_sq_sag < 0:
+		return None
+	D = (r_sq_sag + z4**2 - l2**2 - l3**2) / (2 * l2 * l3)
+	if abs(D) > 1.0:
+		return None
+	q3 = math.atan2(-math.sqrt(1 - D**2), D)
+	q2 = math.atan2(z4, math.sqrt(r_sq_sag)) - math.atan2(l3 * math.sin(q3), l2 + l3 * math.cos(q3))
+	return (q1, q2, q3)
+
+
+def _to_user_right(ri: int, theta_rads: Tuple[float, float, float]) -> Tuple[float, float, float]:
+	cfg = _MAPPING_RIGHT[ri]
 	return tuple(
-		cfg[j]['sign'] * (theta_rads[j-1] * 180/math.pi) + cfg[j]['offset']
+		cfg[j]['sign'] * (theta_rads[j-1] * 180 / math.pi) + cfg[j]['offset']
 		for j in (1, 2, 3)
 	)
 
 
-def solve_ik_or_project(x_h, y_h, z_h, L1, L2, L3, legs12, *, max_up=2.0, min_down=0.1):
+def _solve_decoupled(x_h, y_h, z_h, l1, l2, l3, x4_home, y4_home, *, max_up=2.0, min_down=0.1):
+	"""Decoupled IK with reach-safe projection fallback."""
 	vx, vy, vz = float(x_h), float(y_h), float(z_h)
-	try:
-		q1, q2, q3 = ikine(vx, vy, vz, L1, L2, L3, legs12=legs12)
-		return q1, q2, q3, (vx, vy, vz), 1.0
-	except ValueError:
-		pass
+	result = _decoupled_ikine(vx, vy, vz, l1, l2, l3, x4_home, y4_home)
+	if result is not None:
+		return result[0], result[1], result[2], (vx, vy, vz), 1.0
 
 	steps = [k * 0.02 for k in range(1, int(max(1, max_up / 0.02)))]
 	scales = []
@@ -327,21 +369,20 @@ def solve_ik_or_project(x_h, y_h, z_h, L1, L2, L3, legs12, *, max_up=2.0, min_do
 			scales.append(s2)
 
 	for s in scales:
-		xs, ys, zs = vx*s, vy*s, vz*s
-		try:
-			q1, q2, q3 = ikine(xs, ys, zs, L1, L2, L3, legs12=legs12)
+		xs, ys, zs = vx * s, vy * s, vz * s
+		result = _decoupled_ikine(xs, ys, zs, l1, l2, l3, x4_home, y4_home)
+		if result is not None:
 			if s > 1.0:
 				s *= 0.995
-				xs, ys, zs = vx*s, vy*s, vz*s
-			return q1, q2, q3, (xs, ys, zs), s
-		except ValueError:
-			continue
+				xs, ys, zs = vx * s, vy * s, vz * s
+			return result[0], result[1], result[2], (xs, ys, zs), s
 
 	return None, None, None, None, None
 
 
 def iklegs_move(leg_offsets: Dict[int, Tuple[float, float, float]], step_multiplier=10, speed=10, delay=0.01):
-	"""Move multiple legs together along straight-line paths in body-space."""
+	"""Move multiple legs together along straight-line paths in body-space.
+	Right legs compute via decoupled IK; left legs mirror from paired right leg."""
 	def clamp_angle(a: float) -> float:
 		return max(0.0, min(270.0, a))
 
@@ -349,49 +390,58 @@ def iklegs_move(leg_offsets: Dict[int, Tuple[float, float, float]], step_multipl
 	if not servo_angles:
 		initialize_servo_angles()
 
-	leg_cfg = {
-		0: {'base': ((BODY_LEN/2),  BODY_WID/2,  -0.16), 'scale': ( 3/3.5*5/5.5,   3/3.5,   3/2.5)},
-		1: {'base': ((BODY_LEN/2), -BODY_WID/2, -0.16), 'scale': (-3/3.5*5/4,     3/2,     3/3.75)},
-		2: {'base': (-(BODY_LEN/2), BODY_WID/2, -0.16), 'scale': ( 3/4,           3/3.5,   3/2.5)},
-		3: {'base': (-(BODY_LEN/2),-BODY_WID/2, -0.16), 'scale': (-3/2.5,         3/2,     3/3.75)},
-	}
-
 	max_steps = 0.0
 	for dx, dy, dz in leg_offsets.values():
 		max_steps = max(max_steps,
-						abs(dx)*step_multiplier,
-						abs(dy)*step_multiplier,
-						abs(dz)*step_multiplier)
+						abs(dx) * step_multiplier,
+						abs(dy) * step_multiplier,
+						abs(dz) * step_multiplier)
 
 	steps = max(1, math.ceil(max_steps / max(1e-9, speed)))
-	incs = {leg: (dx/steps, dy/steps, dz/steps) for leg, (dx, dy, dz) in leg_offsets.items()}
+	incs = {leg: (dx / steps, dy / steps, dz / steps) for leg, (dx, dy, dz) in leg_offsets.items()}
 
-	for s in range(1, steps+1):
+	for s in range(1, steps + 1):
 		step_movements: Dict[int, float] = {}
 
 		for leg_idx, (inc_x, inc_y, inc_z) in incs.items():
 			ux = inc_x * s
 			uy = inc_y * s
 			uz = inc_z * s
+			
+			if leg_idx in _MIRROR_PAIR:
+				uy = uy
 
-			cfg = leg_cfg[leg_idx]
-			xb = cfg['base'][0] + ux * cfg['scale'][0]
-			yb = cfg['base'][1] + uy * cfg['scale'][1]
-			zb = cfg['base'][2] + uz * cfg['scale'][2]
+			# All legs route through their paired right leg's pipeline
+			ri = leg_idx if leg_idx in (1, 3) else _MIRROR_PAIR[leg_idx]
+			base = _RIGHT_CFG[ri]['base']
+			scale = _RIGHT_CFG[ri]['scale'] if leg_idx in (1, 3) else _LEFT_SCALE[leg_idx]
+			xb = base[0] + ux * scale[0]
+			yb = base[1] + uy * scale[1]
+			zb = base[2] + uz * scale[2]
 
 			P_body = np.array([xb, yb, zb, 1.0])
-			P_hip = INV_LEG[leg_idx] @ P_body
+			P_hip = _INV_RIGHT[ri] @ P_body
+			hx, hy, _ = _HOME_HIP[ri]
 
-			front = (not (leg_idx in (0, 1))) ^ (leg_idx in (2, 3))
-			q = solve_ik_or_project(P_hip[0], P_hip[1], P_hip[2], L1, L2, L3, front)
+			q = _solve_decoupled(P_hip[0], P_hip[1], P_hip[2], L1, L2, L3, hx, hy)
 			if q[0] is None:
 				continue
 			q1, q2, q3, _, _ = q
+			user_deg = _to_user_right(ri, (q1, q2, q3))
 
-			user_deg = to_user_angles(leg_idx, (q1, q2, q3))
-			for joint, tgt in enumerate(user_deg, start=1):
-				ch = CHANNEL_MAP[leg_idx][joint]
-				step_movements[ch] = tgt - servo_angles[ch]
+			if leg_idx in (1, 3):
+				# Right leg: apply servo targets directly
+				for joint, tgt in enumerate(user_deg, start=1):
+					ch = CHANNEL_MAP[leg_idx][joint]
+					step_movements[ch] = tgt - servo_angles[ch]
+			else:
+				# Left leg: mirror servo deltas from right
+				for j in (1, 2, 3):
+					ch_R = CHANNEL_MAP[ri][j]
+					ch_L = CHANNEL_MAP[leg_idx][j]
+					delta_R = user_deg[j - 1] - _RIGHT_HOME_SERVO[ch_R]
+					target_L = servo_home[ch_L] + _MIRROR_SIGN[j] * delta_R
+					step_movements[ch_L] = target_L - servo_angles[ch_L]
 
 		for ch, delta in step_movements.items():
 			new_ang = clamp_angle(servo_angles[ch] + delta)
