@@ -308,7 +308,7 @@ _MAPPING_RIGHT = {
 }
 
 _MIRROR_PAIR = {0: 1, 2: 3}
-_MIRROR_SIGN = {1: +1, 2: -1, 3: -1}
+_MIRROR_SIGN = {1: -1, 2: -1, 3: -1}
 
 _INV_RIGHT = {}
 _ht_body0 = homog_transxyz(0,0,0) @ homog_rotxyz(0,0,0)
@@ -341,7 +341,7 @@ def _decoupled_ikine(x4, y4, z4, l1, l2, l3, x4_home, y4_home):
 		return None
 	q1 = math.atan2(y4, x4_home) + math.atan2(math.sqrt(r_sq), -l1)
 
-	r_sq_sag = x4**2 + y4_home**2 - l1**2
+	r_sq_sag = x4**2 + y4**2 - l1**2
 	if r_sq_sag < 0:
 		return None
 	D = (r_sq_sag + z4**2 - l2**2 - l3**2) / (2 * l2 * l3)
@@ -419,6 +419,9 @@ def iklegs_move(leg_offsets, step_multiplier=10, speed=10, delay=0.01):
 			ux = inc_x * s
 			uy = inc_y * s
 			uz = inc_z * s
+
+			if leg_idx in _MIRROR_PAIR:
+				uy = -uy
 
 			ri = leg_idx if leg_idx in (1, 3) else _MIRROR_PAIR[leg_idx]
 			cfg = _RIGHT_CFG[ri]

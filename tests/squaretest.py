@@ -15,9 +15,9 @@ import MoveLib as ml
 # MANUAL EDITS
 # ============================================================
 
-TEST_LEG = 1          # 0,1,2,3
-TEST_PLANE = "y"      # "x", "y", or "z"
-SQUARE_SIZE_M = 0.06  # 3 cm
+TEST_LEG = 0          # 0,1,2,3
+TEST_PLANE = "z"      # "x", "y", or "z"
+SQUARE_SIZE_M = 0.08  # 3 cm
 
 # Manual calibration multipliers on top of MoveLib's internal scales
 X_SCALE = 1.00

@@ -292,7 +292,7 @@ _MAPPING_RIGHT = {
 # Mirror pairs: left_leg -> right_leg
 _MIRROR_PAIR = {0: 1, 2: 3}
 # How left deltas relate to right deltas per joint
-_MIRROR_SIGN = {1: 1, 2: -1, 3: -1}
+_MIRROR_SIGN = {1: -1, 2: -1, 3: -1}
 
 # Right leg transforms and config
 _INV_RIGHT: Dict[int, np.ndarray] = {}
@@ -302,8 +302,8 @@ for _ri, _tf_fn in {1: t_rightfront, 3: t_rightback}.items():
 	_INV_RIGHT[_ri] = ht_inverse(_T)
 
 _RIGHT_CFG = {
-	1: {'base': ( BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/3.5*5/4, 3/2, 3/3.75)},
-	3: {'base': (-BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/2.5,     3/2, 3/3.75)},
+	1: {'base': ( BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/3.5*5/4, 1, 3/3.75)},
+	3: {'base': (-BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/2.5,     1, 3/3.75)},
 }
 
 _LEFT_SCALE = {
@@ -332,7 +332,7 @@ def _decoupled_ikine(x4, y4, z4, l1, l2, l3, x4_home, y4_home):
 		return None
 	q1 = math.atan2(y4, x4_home) + math.atan2(math.sqrt(r_sq), -l1)
 
-	r_sq_sag = x4**2 + y4_home**2 - l1**2
+	r_sq_sag = x4**2 + y4**2 - l1**2
 	if r_sq_sag < 0:
 		return None
 	D = (r_sq_sag + z4**2 - l2**2 - l3**2) / (2 * l2 * l3)
@@ -409,7 +409,7 @@ def iklegs_move(leg_offsets: Dict[int, Tuple[float, float, float]], step_multipl
 			uz = inc_z * s
 			
 			if leg_idx in _MIRROR_PAIR:
-				uy = uy
+				uy = -uy
 
 			# All legs route through their paired right leg's pipeline
 			ri = leg_idx if leg_idx in (1, 3) else _MIRROR_PAIR[leg_idx]
