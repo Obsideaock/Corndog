@@ -42,7 +42,7 @@ output_enable = OutputDevice(OE_PIN, active_high=False)
 
 # Define the servo channels and positions
 servo_channels = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
-servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9: 135, 10: 73, 11: 204, 14: 235, 15: 37-4}
+servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9: 135, 10: 73, 11: 204, 14: 235, 15: 33}
 TURN_SCALE = 0.2
 LEFT_CHANNELS  = {15, 11,  0,  4}  # FL ankle, FL thigh, BL ankle, BL thigh
 RIGHT_CHANNELS = {14, 10,  1,  5}  # FR ankle, FR thigh, BR ankle, BR thigh

@@ -3,6 +3,7 @@ import threading
 import socket
 import time
 import re
+import os
 
 import cv2
 from picamera2 import Picamera2
@@ -10,6 +11,18 @@ from picamera2 import Picamera2
 import MoveLib as mlib
 
 """ THis is to run on the raspberry pi! Do not run it on the steamdeck"""
+
+# Invalidate any saved Flipper motor state — the Steam Deck may leave the
+# robot in a completely different position, so the Flipper must do a cold
+# start next time rather than trusting a stale saved pose.
+_FLIPPER_STATE_FILE = "/tmp/queue_state.json"
+try:
+    os.remove(_FLIPPER_STATE_FILE)
+    print(f"[SteamDeck] Cleared Flipper state file ({_FLIPPER_STATE_FILE})")
+except FileNotFoundError:
+    pass  # nothing to clear, that's fine
+except Exception as e:
+    print(f"[SteamDeck] Warning: could not clear Flipper state file: {e}")
 
 
 # CONFIGURATION
@@ -76,11 +89,9 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 					self.send_header("Content-Length", str(len(data)))
 					self.end_headers()
 					self.wfile.write(data + b"\r\n")
-					# self.wfile.flush()  # optional; may also raise on disconnect
 				except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
 					break
 				except OSError as e:
-					# swallow common “client went away” cases (Linux/macOS/Windows vary)
 					if e.errno in (errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED):
 						break
 					raise
@@ -100,10 +111,8 @@ def run_mjpeg_server():
 
 
 def _send_cmd_from_axes(force: bool = False):
-	"""Convert current (lx, ly, rx, ry) -> (vx, vy, wz) and send gait_command (rate limited)."""
 	global _last_sent, _last_send_t
 
-	# FIX: MoveLib uses left_deadzone/right_deadzone (not deadzone=)
 	vx, vy, wz = mlib.joystick_to_cmd(
 		lx, ly, rx, ry,
 		left_deadzone=DEADZONE,
@@ -123,12 +132,6 @@ def _send_cmd_from_axes(force: bool = False):
 
 
 def _is_press_event(parts):
-	"""
-	Returns True only for a press.
-	Handles common formats:
-	  "X" / "X 1" / "X pressed" => press
-	  "X 0" / "X released"      => ignore
-	"""
 	if len(parts) <= 1:
 		return True
 	v = parts[1].strip().lower()
@@ -136,7 +139,6 @@ def _is_press_event(parts):
 		return False
 	if v in ("1", "press", "pressed", "down", "true"):
 		return True
-	# unknown token: treat as press (safer than missing inputs)
 	return True
 
 
@@ -149,19 +151,13 @@ def _debounced(btn, now):
 
 
 def _stop_gait_for_emotion():
-	# Stop gait WITHOUT scheduling the 1.5s inactivity reset (prevents “mystery” IK moves during emotes)
 	if hasattr(mlib, "stop_gait"):
 		mlib.stop_gait(schedule_inactivity_reset=False)
 	else:
-		# fallback (older MoveLib): this may schedule a reset; your current MoveLib has stop_gait
 		mlib.gait_command(0.0, 0.0, 0.0)
 
 
 def _drain_socket(conn):
-	"""
-	After a blocking emote, the TCP buffer may contain queued release/repeat events.
-	Drain them so we don't accidentally trigger a toggle again.
-	"""
 	try:
 		conn.setblocking(False)
 		while True:
@@ -207,12 +203,9 @@ def run_control_listener():
 				for raw in lines:
 					now = time.time()
 
-					# Hard lock: if an emote is currently executing, ignore everything
-					# (but we still keep reading loop to avoid backlog growth)
 					if emotion_busy:
 						continue
 
-					# 0) initial activation (press A once)
 					if not activated:
 						parts = raw.split()
 						if parts and parts[0] == "A" and _is_press_event(parts):
@@ -239,14 +232,11 @@ def run_control_listener():
 							mode = "normal"
 						continue
 
-					# 1) lockout window
 					if now < busy_until:
 						continue
 
-					# 2) joystick updates (only in normal mode)
 					stick_msgs = stick_re.findall(raw)
 					if stick_msgs:
-						# ignore joystick while sitting/kneeling
 						if mode != "normal":
 							continue
 
@@ -266,21 +256,17 @@ def run_control_listener():
 						_send_cmd_from_axes()
 						continue
 
-					# 3) buttons
 					parts = raw.split()
 					if not parts:
 						continue
 					btn = parts[0]
 
-					# press-only
 					if not _is_press_event(parts):
 						continue
 
-					# debounce
 					if not _debounced(btn, now):
 						continue
 
-					# If sitting/kneeling is toggled ON: disable everything except A and the matching toggle button.
 					if mode == "sitting" and btn not in ("Y", "B", "X"):
 						continue
 					if mode == "kneeling" and btn != "X":
@@ -329,7 +315,6 @@ def run_control_listener():
 							busy_until = now + 0.5
 
 						else:
-							# standing/normal -> kneel toggle
 							print("[Control] X pressed: kneel toggle")
 							emotion_busy = True
 							try:
@@ -368,7 +353,6 @@ def run_control_listener():
 						busy_until = now + 0.5
 
 					else:
-						# ignore other buttons (START/BACK removed)
 						pass
 
 	finally:

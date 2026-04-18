@@ -2,14 +2,13 @@
 """
 lcd_supervisor.py (Raspberry Pi)
 
-Default: shows WiFi + Raspi Connect status on LCD.
-Watches for:
-  - Flipper keyboard presence (via /dev/input and evdev)
-  - Steam Deck presence socket (incoming TCP on PRESENCE_PORT)
+Manages two robot controller scripts:
+  - Flipper2.py               : runs by default at all times, auto-restarts on crash
+  - SteamDeckCommunication.py : launched when Steam Deck presence detected;
+                                Flipper2 is killed while Steam Deck is present
+                                and restarted when it leaves.
 
-If Flipper present (and no Steam Deck present): launches FLIPPER_MODE_CMD
-If Steam Deck present: launches STEAMDECK_MODE_CMD
-On disconnect (device disappears / socket closes): kills launched script and returns to LCD status.
+Steam Deck always takes priority — only one script owns GPIO at a time.
 """
 
 import os
@@ -20,75 +19,57 @@ import threading
 import subprocess
 import signal
 
-# LCD
 import sys
 sys.path.insert(0, "/home/Corndog")
 from lcd import lcd_library as lcd
 
-# Optional evdev (needed for Flipper detect)
-try:
-    from evdev import InputDevice, list_devices
-except Exception:
-    InputDevice = None
-    list_devices = None
 
-
-# -------------------- CONFIG YOU MUST SET --------------------
-# Steam Deck presence port (must match the Deck script)
+# -------------------- CONFIG --------------------
 PRESENCE_PORT = 65431
 
-# What to launch when Steam Deck is present (Pi-side server/controller script)
-STEAMDECK_MODE_CMD = ["/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python", "/home/Corndog/Desktop/RobotOperationScripts/Corndog/SteamDeckCommunication.py"]  # <-- CHANGE THIS
+STEAMDECK_MODE_CMD = [
+    "/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python",
+    "/home/Corndog/Desktop/RobotOperationScripts/Corndog/SteamDeckCommunication.py",
+]
 
-# What to launch when Flipper is present (your flipper menu script)
-FLIPPER_MODE_CMD = ["/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python", "/home/Corndog/Desktop/RobotOperationScripts/Corndog/Flipper2.py"]  # <-- CHANGE THIS
+FLIPPER2_CMD = [
+    "/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python",
+    "/home/Corndog/Desktop/RobotOperationScripts/Corndog/Flipper2.py",
+]
 
-# Flipper name match (same idea as your evdev script)
-FLIPPER_NAME_MATCHES = ("flipper", "keynote", "control", "laon")
-
-# Polling / UI timing
-POLL_S = 0.5
-LCD_REFRESH_S = 2.0
-
-# If both are present: Steam Deck wins (set False to prefer Flipper instead)
-STEAMDECK_PRIORITY = True
-
-# Raspi Connect check
-CONNECT_USER = os.environ.get("CONNECT_USER")  # e.g. export CONNECT_USER=pi
+POLL_S          = 0.5
+LCD_REFRESH_S   = 2.0
+RESTART_DELAY_S = 3.0
 
 
 # -------------------- WiFi + Connect status --------------------
 def get_wifi_status():
     try:
         result = subprocess.run(['nmcli', 'radio', 'wifi'], stdout=subprocess.PIPE, text=True)
-        wifi_state = result.stdout.strip()
-        if wifi_state == "disabled":
+        if result.stdout.strip() == "disabled":
             return "Wifi: Off"
-
         result = subprocess.run(['nmcli', 'device', 'status'], stdout=subprocess.PIPE, text=True)
-        lines = result.stdout.strip().split("\n")
-
-        for line in lines:
+        for line in result.stdout.strip().split("\n"):
             if "wifi" in line:
                 columns = line.split()
                 state = columns[2] if len(columns) > 2 else ""
                 if state == "connected":
                     ssid_result = subprocess.run(
                         ['nmcli', '-t', '-f', 'active,ssid', 'dev', 'wifi'],
-                        stdout=subprocess.PIPE,
-                        text=True
+                        stdout=subprocess.PIPE, text=True,
                     )
                     for ssid_line in ssid_result.stdout.strip().split("\n"):
                         if ssid_line.startswith("yes:"):
-                            ssid = ssid_line.split(":", 1)[1]
-                            return f"Wifi: Connected {ssid}"
+                            return f"Wifi: {ssid_line.split(':', 1)[1]}"
                     return "Wifi: Connected"
                 elif state == "disconnected":
                     return "Wifi: Searching"
-
         return "Wifi: Searching"
     except Exception as e:
         return f"WiFi Err: {e}"
+
+
+CONNECT_USER = os.environ.get("CONNECT_USER")
 
 
 def _run_rpi_connect_status():
@@ -100,63 +81,34 @@ def _run_rpi_connect_status():
 
 
 def get_connect_info():
-    """
-    Returns (online_bool, active_sessions_int)
-    Online/ready check:
-      Signed in: yes AND Subscribed to events: yes
-    Active session check:
-      Parses 'Screen sharing: ... (N sessions active)'
-      and 'Remote shell: ... (N sessions active)'
-    """
     try:
         rc, out = _run_rpi_connect_status()
         if rc != 0:
             return False, 0
 
-        def yn(field_name: str) -> bool:
-            m = re.search(rf"^{re.escape(field_name)}:\s*(yes|no)\s*$", out, flags=re.MULTILINE)
-            return (m.group(1) == "yes") if m else False
+        def yn(field):
+            m = re.search(rf"^{re.escape(field)}:\s*(yes|no)\s*$", out, flags=re.MULTILINE)
+            return bool(m and m.group(1) == "yes")
 
-        def sessions(kind: str) -> int:
+        def sessions(kind):
             m = re.search(
                 rf"^{re.escape(kind)}:.*\((\d+)\s+sessions?\s+active\)\s*$",
-                out,
-                flags=re.MULTILINE
+                out, flags=re.MULTILINE,
             )
             return int(m.group(1)) if m else 0
 
         online = yn("Signed in") and yn("Subscribed to events")
         active = sessions("Screen sharing") + sessions("Remote shell")
         return online, active
-
     except FileNotFoundError:
         return False, 0
     except Exception:
         return False, 0
 
 
-# -------------------- Flipper presence detect --------------------
-def flipper_present() -> bool:
-    if list_devices is None or InputDevice is None:
-        return False
-    try:
-        for p in list_devices():
-            try:
-                dev = InputDevice(p)
-                name = (dev.name or "").lower()
-                dev.close()
-                if any(s in name for s in FLIPPER_NAME_MATCHES):
-                    return True
-            except Exception:
-                continue
-    except Exception:
-        return False
-    return False
-
-
 # -------------------- Steam Deck presence listener --------------------
 class SteamDeckPresence:
-    def __init__(self, port: int):
+    def __init__(self, port):
         self.port = port
         self._lock = threading.Lock()
         self._connected = False
@@ -164,8 +116,7 @@ class SteamDeckPresence:
         self._stop = threading.Event()
 
     def start(self):
-        t = threading.Thread(target=self._run, daemon=True)
-        t.start()
+        threading.Thread(target=self._run, daemon=True).start()
 
     def stop(self):
         self._stop.set()
@@ -178,11 +129,11 @@ class SteamDeckPresence:
             self._conn = None
             self._connected = False
 
-    def is_connected(self) -> bool:
+    def is_connected(self):
         with self._lock:
             return self._connected
 
-    def _set_connected(self, v: bool, conn=None):
+    def _set_connected(self, v, conn=None):
         with self._lock:
             self._connected = v
             self._conn = conn
@@ -195,42 +146,36 @@ class SteamDeckPresence:
         s.settimeout(0.5)
 
         while not self._stop.is_set():
-            # If already connected, poll the connection for liveness
             if self.is_connected():
                 with self._lock:
                     conn = self._conn
                 if conn is None:
-                    self._set_connected(False, None)
+                    self._set_connected(False)
                     continue
                 try:
                     conn.settimeout(0.1)
                     data = conn.recv(1)
                     if not data:
-                        # clean close
-                        self._set_connected(False, None)
+                        self._set_connected(False)
                         try:
                             conn.close()
                         except Exception:
                             pass
-                    else:
-                        # got heartbeat byte, still alive
-                        pass
                 except socket.timeout:
                     pass
                 except Exception:
-                    self._set_connected(False, None)
+                    self._set_connected(False)
                     try:
                         conn.close()
                     except Exception:
                         pass
                 continue
 
-            # Not connected: accept new
             try:
                 conn, addr = s.accept()
                 try:
                     conn.settimeout(0.5)
-                    _ = conn.recv(64)  # read "STEAMDECK_READY\n" or heartbeat
+                    conn.recv(64)
                 except Exception:
                     pass
                 self._set_connected(True, conn)
@@ -245,12 +190,21 @@ class SteamDeckPresence:
             pass
 
 
-# -------------------- Subprocess management --------------------
+# -------------------- Process helpers --------------------
 def _popen(cmd):
-    # put child in its own process group so we can kill the whole thing
-    return subprocess.Popen(cmd, preexec_fn=os.setsid)
+    """Launch cmd in its own process group, capturing stdout+stderr."""
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    return subprocess.Popen(
+        cmd,
+        preexec_fn=os.setsid,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+    )
 
-def _kill_proc(p: subprocess.Popen, grace_s: float = 1.0):
+
+def _kill_proc(p, grace_s=1.0):
     if p is None:
         return
     try:
@@ -266,98 +220,154 @@ def _kill_proc(p: subprocess.Popen, grace_s: float = 1.0):
         pass
 
 
-# -------------------- Supervisor loop --------------------
+# -------------------- Crash-restart watcher --------------------
+def _watch_for_crash(name, proc, restart_fn):
+    """
+    Waits for a process to exit. If it wasn't killed intentionally,
+    waits RESTART_DELAY_S then calls restart_fn() to bring it back.
+    restart_fn receives one argument: was_intentional (bool).
+    """
+    # Drain stdout so the pipe doesn't fill and block the child.
+    try:
+        for raw in iter(proc.stdout.readline, b''):
+            line = raw.decode("utf-8", errors="ignore").strip()
+            if line:
+                print(f"[{name}] {line}")
+    except Exception:
+        pass
+
+    restart_fn()
+
+
+# -------------------- Main --------------------
 def main():
-    lcd.lcd(get_wifi_status())
-    last_lcd_t = 0.0
+    _flipper_proc   = None
+    _steamdeck_proc = None
+    _steamdeck_present = False
+
+    # Suppress flags: set True before an intentional kill so the watcher
+    # thread doesn't schedule a restart for that death.
+    _flipper_suppress   = [False]   # wrapped in list so closure can mutate
+    _steamdeck_suppress = [False]
+
+    def start_flipper():
+        nonlocal _flipper_proc
+        _flipper_suppress[0] = False
+        p = _popen(FLIPPER2_CMD)
+        _flipper_proc = p
+        print("[Supervisor] Flipper2.py started")
+
+        def on_exit():
+            nonlocal _flipper_proc
+            _flipper_proc = None
+            if _flipper_suppress[0]:
+                print("[Supervisor] Flipper2.py stopped (intentional)")
+                return
+            print(f"[Supervisor] Flipper2.py crashed — restarting in {RESTART_DELAY_S}s")
+            time.sleep(RESTART_DELAY_S)
+            # Only restart if Steam Deck isn't currently using the Pi
+            if not _steamdeck_present:
+                start_flipper()
+
+        threading.Thread(target=_watch_for_crash, args=("flipper", p, on_exit), daemon=True).start()
+
+    def kill_flipper():
+        nonlocal _flipper_proc
+        _flipper_suppress[0] = True
+        _kill_proc(_flipper_proc)
+        _flipper_proc = None
+        print("[Supervisor] Flipper2.py killed (Steam Deck priority)")
+
+    def start_steamdeck():
+        nonlocal _steamdeck_proc
+        _steamdeck_suppress[0] = False
+        p = _popen(STEAMDECK_MODE_CMD)
+        _steamdeck_proc = p
+        print("[Supervisor] SteamDeckCommunication.py started")
+
+        def on_exit():
+            nonlocal _steamdeck_proc
+            _steamdeck_proc = None
+            if _steamdeck_suppress[0]:
+                print("[Supervisor] SteamDeckCommunication.py stopped (intentional)")
+                return
+            print(f"[Supervisor] SteamDeckCommunication.py crashed — restarting in {RESTART_DELAY_S}s")
+            time.sleep(RESTART_DELAY_S)
+            if _steamdeck_present:
+                start_steamdeck()
+
+        threading.Thread(target=_watch_for_crash, args=("steamdeck", p, on_exit), daemon=True).start()
+
+    def kill_steamdeck():
+        nonlocal _steamdeck_proc
+        _steamdeck_suppress[0] = True
+        _kill_proc(_steamdeck_proc)
+        _steamdeck_proc = None
+        print("[Supervisor] SteamDeckCommunication.py killed")
+
+    try:
+        lcd.lcd(get_wifi_status())
+    except Exception:
+        pass
+
+    last_lcd_t   = 0.0
     last_lcd_msg = None
 
     presence = SteamDeckPresence(PRESENCE_PORT)
     presence.start()
 
-    mode = "lcd"  # "lcd" | "steamdeck" | "flipper"
-    proc = None
+    # Flipper2 runs from boot by default.
+    start_flipper()
 
     try:
         while True:
-            steamdeck = presence.is_connected()
-            flipper = flipper_present()
+            deck_now = presence.is_connected()
 
-            # Decide target mode
-            target = "lcd"
-            if steamdeck and flipper:
-                if STEAMDECK_PRIORITY:
-                    target = "steamdeck"
-                else:
-                    target = "flipper"
-            elif steamdeck:
-                target = "steamdeck"
-            elif flipper:
-                target = "flipper"
+            # ── Steam Deck just appeared ──────────────────────────
+            if deck_now and not _steamdeck_present:
+                _steamdeck_present = True
+                print("[Supervisor] Steam Deck detected — killing Flipper2, launching SteamDeck")
+                kill_flipper()
+                start_steamdeck()
+                try:
+                    lcd.lcd("Steam Deck      Active")
+                except Exception:
+                    pass
 
-            # Mode switch?
-            if target != mode:
-                # stop current
-                if proc is not None:
-                    _kill_proc(proc)
-                    proc = None
-
-                mode = target
-
-                if mode == "steamdeck":
-                    lcd.lcd("Steam Deck      Mode")
-                    proc = _popen(STEAMDECK_MODE_CMD)
-
-                elif mode == "flipper":
+            # ── Steam Deck just disappeared ───────────────────────
+            elif not deck_now and _steamdeck_present:
+                _steamdeck_present = False
+                print("[Supervisor] Steam Deck gone — killing SteamDeck, restoring Flipper2")
+                kill_steamdeck()
+                start_flipper()
+                try:
                     lcd.lcd("Flipper Mode")
-                    proc = _popen(FLIPPER_MODE_CMD)
+                except Exception:
+                    pass
 
-                else:
-                    # back to LCD status immediately
-                    last_lcd_t = 0.0
-                    last_lcd_msg = None
-
-            # If running a mode script, and it died, fall back to LCD
-            if proc is not None and proc.poll() is not None:
-                proc = None
-                mode = "lcd"
-                last_lcd_t = 0.0
-                last_lcd_msg = None
-
-            # LCD status mode updates
-            if mode == "lcd":
-                now = time.time()
-                if now - last_lcd_t >= LCD_REFRESH_S:
-                    online, active_sessions = get_connect_info()
-                    wifi_msg = get_wifi_status()
+            # ── LCD idle status ───────────────────────────────────
+            now = time.time()
+            if now - last_lcd_t >= LCD_REFRESH_S:
+                if not deck_now:
+                    online, sessions = get_connect_info()
                     if online:
-                        msg = "Raspi Connect   Online"
-                        # If someone connects via Connect, you *could* clear LCD or show sessions
-                        if active_sessions > 0:
-                            msg = f"Connect Session {active_sessions}"
+                        msg = (f"Connect: {sessions} sess" if sessions else "Raspi Connect   Online")
                     else:
-                        # show WiFi
-                        # If too long, LCD lib usually truncates; keep it simple
-                        msg = wifi_msg
-
+                        msg = get_wifi_status()
                     if msg != last_lcd_msg:
-                        lcd.lcd(msg)
+                        try:
+                            lcd.lcd(msg)
+                        except Exception:
+                            pass
                         last_lcd_msg = msg
-
-                    last_lcd_t = now
+                last_lcd_t = now
 
             time.sleep(POLL_S)
 
     finally:
-        try:
-            if proc is not None:
-                _kill_proc(proc)
-        except Exception:
-            pass
-        try:
-            presence.stop()
-        except Exception:
-            pass
+        kill_flipper()
+        kill_steamdeck()
+        presence.stop()
         try:
             lcd.clear()
         except Exception:

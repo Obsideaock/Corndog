@@ -10,6 +10,9 @@ Protocol (Flipper -> Pi):
 
 Both sides auto-advance after ENTER so they stay in lockstep.
 On reconnect, Flipper sends its index and Pi adjusts to match.
+
+Menu is initialised only after the first successful BLE connection so that
+warm-reconnect / stand-up happens at the right time, not at script launch.
 """
 
 import asyncio
@@ -19,15 +22,17 @@ from bleak import BleakClient, BleakScanner
 DEVICE_ADDRESS = None
 DEVICE_NAME_MATCHES = ("flipper", "control", "corndog", "laon")
 FLIPPER_TX_CHAR = "19ed82ae-ed21-4c9d-4145-228e61fe0000"
-FLIPPER_RX_CHAR = "19ed82ae-ed21-4c9d-4145-228e62fe0000"  # Pi -> Flipper write
+FLIPPER_RX_CHAR = "19ed82ae-ed21-4c9d-4145-228e62fe0000"
 
-menu = None
+menu       = None
 async_loop = None
 ble_client = None
+lcdw       = None   # set after FlipperTed import
+_QueueController = None
+_MOTIONS         = None
 
 
 async def send_sync(index: int):
-    """Try writing sync to Flipper."""
     global ble_client
     if not ble_client or not ble_client.is_connected:
         return
@@ -37,24 +42,47 @@ async def send_sync(index: int):
         print(f"  -> Sync sent: index={index}")
     except Exception as e:
         print(f"  -> Sync write failed: {e}")
-rx_state = 0  # parser state: 0=idle, 1=expecting index after 'I'
+
+
+rx_state = 0        # parser state: 0=idle, 1=expecting index byte after 'I'
+_menu_initializing = False  # guard against double-init if two 'I' bytes arrive fast
 
 
 def handle_byte(b):
-    global rx_state
+    global rx_state, menu, _menu_initializing
 
     if rx_state == 1:
-        # This byte is the index after 'I'
         rx_state = 0
         index = b
-        if menu:
-            num = len(menu.motions)
-            index = index % num
-            if menu.index != index:
-                print(f"BLE: SYNC {menu.motions[menu.index].label} -> {menu.motions[index].label}")
-                menu.index = index
-                menu.show()
-            # silently ignore if already in sync
+
+        if menu is None:
+            # First real proof the Flipper app is open — initialise now
+            if _menu_initializing or _QueueController is None or async_loop is None:
+                return
+            _menu_initializing = True
+            received_index = index  # capture for closure
+
+            async def init_and_sync():
+                global menu, _menu_initializing
+                def do_init():
+                    m = _QueueController(_MOTIONS, async_loop)
+                    m.index = received_index % len(m.motions)
+                    m.show()
+                    return m
+                menu = await async_loop.run_in_executor(None, do_init)
+                _menu_initializing = False
+                print(f"  Menu initialised at: {menu.current().label}")
+
+            asyncio.run_coroutine_threadsafe(init_and_sync(), async_loop)
+            return
+
+        # Menu already exists — just sync index
+        num = len(menu.motions)
+        index = index % num
+        if menu.index != index:
+            print(f"BLE: SYNC {menu.motions[menu.index].label} -> {menu.motions[index].label}")
+            menu.index = index
+            menu.show()
         return
 
     cmd = chr(b)
@@ -76,13 +104,12 @@ def handle_byte(b):
                     print(f"  Motion error: {e}")
                     menu.index = (menu.index + 1) % len(menu.motions)
                     menu.show()
-                # Try to send sync back to Flipper
                 await send_sync(menu.index)
             asyncio.run_coroutine_threadsafe(run_motion(), async_loop)
     elif cmd == 'I':
-        rx_state = 1  # next byte is index
+        rx_state = 1
     else:
-        pass  # ignore unknown bytes silently
+        pass
 
 
 def on_notify(sender, data: bytearray):
@@ -103,7 +130,8 @@ async def find_flipper() -> str:
 
 
 async def connect_and_listen(address: str):
-    global ble_client
+    global ble_client, menu
+
     print(f"Connecting to {address}...")
 
     try:
@@ -128,9 +156,7 @@ async def connect_and_listen(address: str):
         return
 
     print("Listening for Flipper commands...")
-    if menu:
-        print(f"  Pi index: {menu.index} ({menu.current().label})")
-        print(f"  Waiting for Flipper to send its index...")
+    print(f"  Waiting for Flipper to send its index to initialise...")
 
     try:
         while client.is_connected:
@@ -141,10 +167,17 @@ async def connect_and_listen(address: str):
         ble_client = None
         try:
             await client.disconnect()
-        except:
+        except Exception:
             pass
 
     print("Disconnected.")
+
+    # Clear the LCD so it doesn't show stale menu text while searching
+    if lcdw:
+        try:
+            lcdw.clear()
+        except Exception:
+            pass
 
 
 async def ble_loop():
@@ -164,13 +197,20 @@ async def main_standalone():
 
 
 async def main_with_robot():
-    global menu, async_loop
-    from FlipperTed import QueueController, MOTIONS, lcdw
+    global async_loop, lcdw, _QueueController, _MOTIONS
+
+    from Flipperrmrrf import QueueController, MOTIONS, lcdw as _lcdw
+    lcdw = _lcdw
+    _QueueController = QueueController
+    _MOTIONS = MOTIONS
+
     async_loop = asyncio.get_running_loop()
     lcdw.start()
     lcdw.clear()
-    menu = QueueController(MOTIONS, async_loop)
-    menu.show()
+
+    # Menu is intentionally NOT created here — it's created inside
+    # connect_and_listen() on the first successful BLE connection so that
+    # warm-reconnect / stand-up runs only after the Flipper is actually there.
     print("Robot ready via BLE.")
     await ble_loop()
 
