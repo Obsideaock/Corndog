@@ -1,4 +1,4 @@
-# 🌭 Project Corndog
+# Project Corndog
 
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![GitHub Stars](https://img.shields.io/github/stars/Obsideaock/Corndog.svg)](https://github.com/Obsideaock/Corndog/stargazers)
@@ -12,7 +12,7 @@
 
 Corndog started as a workaround to a college rule (no drones on campus → build a walking robot instead) and turned into a nearly two-year deep dive into robotics, kinematics, and control systems. Based on the open-source MicroSpot design and inspired by Boston Dynamics' Spot, it's a small quadruped with 3 degrees of freedom per leg, a full inverse kinematics stack, IMU feedback, and a growing set of behaviors.
 
-**As featured on American Ninja Warrior Season 17 🎉**
+**As featured on American Ninja Warrior Season 17**
 
 ---
 
@@ -54,7 +54,7 @@ Corndog started as a workaround to a college rule (no drones on campus → build
 
 ## Estimated Cost
 
-Corndog is open-source — you can print and source everything yourself. If you'd rather skip the work, a kit is coming soon through [OpenLonehollow](https://openlonehollow.com).
+Corndog is open-source — you can print and source everything yourself. If you'd rather skip the work, a kit is coming soon through [OpenLonehollow](https://openlonehollow.com/Projects/corndog/corndog.html).
 
 | Tier | What You Get | Estimated Price |
 |---|---|---|
@@ -90,7 +90,7 @@ Modifications and custom parts (like the shoulder harness for companion mode) ar
 
 - All parts currently printed in **PLA**
 - Experimented with ASA for joints (more strength) but it snapped under stress and PLA is easier to work with
-- Thanks to **BTULab @ CU Boulder** for printing assistance
+- Thanks to **BTULab (where I work now) @ CU Boulder** for printing assistance
 
 ---
 
@@ -128,7 +128,7 @@ Also required (manual install):
 
 ## Setup & Calibration
 
-> ⚠️ Full calibration guide coming soon. Here's the short version:
+> Full calibration guide coming soon. Here's the short version:
 
 **1. Clone and install**
 ```bash
