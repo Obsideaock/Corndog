@@ -8,7 +8,7 @@
 
 > An open-source quadruped robot designed to make robotics accessible — one walking robot at a time.
 
-![Corndog Walking](https://media.openlonehollow.com/gifs/Walking.gifv=2)
+![Corndog Walking](https://media.openlonehollow.com/gifs/Walking.gif?v=2)
 
 Corndog started as a workaround to a college rule (no drones on campus → build a walking robot instead) and turned into a nearly two-year deep dive into robotics, kinematics, and control systems. Based on the open-source MicroSpot design and inspired by Boston Dynamics' Spot, it's a small quadruped with 3 degrees of freedom per leg, a full inverse kinematics stack, IMU feedback, and a growing set of behaviors.
 
