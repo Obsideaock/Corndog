@@ -15,8 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core import SlamCore, SlamConfig, MotionHint
 import sim, nav, web_server
 from waypoints import WaypointStore
+from keepout import KeepoutStore
+from loop_closure import LoopCloser
 
-core = SlamCore(SlamConfig(size_m=16.0, res=0.05))
+# demo maps while the sim walks (the robot pre-maps by driving); still gates turns
+core = SlamCore(SlamConfig(size_m=16.0, res=0.05, map_gate_v=0.30, map_gate_wz=0.15))
 rng = np.random.default_rng(7)
 
 # --- shared commanded velocity, written by the nav controller's drive() ---
@@ -55,9 +58,11 @@ def sim_loop():
                                       pitch=math.radians(4) * math.sin(time.time() * 6), roll=0.0, dt=DT))
         time.sleep(DT)
 
-nav_ctrl = nav.NavController(core, drive)        # its own follower thread
+ko = KeepoutStore(None)
+nav_ctrl = nav.NavController(core, drive, keepout=ko)        # its own follower thread
 wp = WaypointStore(None)
-web_server.serve(core, nav_ctrl, wp)
+loop_closer = LoopCloser(core, start_thread=True)
+web_server.serve(core, nav_ctrl, wp, ko, loop_closer)
 threading.Thread(target=sim_loop, daemon=True).start()
 try:
     while True: time.sleep(1)

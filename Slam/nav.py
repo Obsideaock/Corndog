@@ -16,7 +16,7 @@ import numpy as np
 
 # Corndog body is ~0.19 x 0.08 m; treat as a ~0.10 m radius footprint.
 ROBOT_RADIUS_M = 0.10
-DEFAULT_CLEARANCE_M = 0.10        # extra breathing room (user-configurable)
+DEFAULT_CLEARANCE_M = 0.15        # extra breathing room (user-configurable, v2.1: 15 cm)
 OCC_THRESH = 0.65
 FREE_THRESH = 0.35
 
@@ -34,11 +34,42 @@ def _dilate(mask, r):
     return m
 
 
-def blocked_mask(grid, clearance_m=DEFAULT_CLEARANCE_M, occ_thresh=OCC_THRESH):
-    """Occupied cells inflated by robot radius + clearance."""
+def blocked_mask(grid, clearance_m=DEFAULT_CLEARANCE_M, occ_thresh=OCC_THRESH, zones=None):
+    """Occupied cells (plus any keep-out zones) inflated by robot radius + clearance."""
     occ = grid.prob() >= occ_thresh
+    if zones is not None:
+        occ = occ | zones.mask(grid)
     r = max(1, int(round((ROBOT_RADIUS_M + clearance_m) / grid.res)))
     return _dilate(occ, r)
+
+
+def reachable_free(grid, blocked, start_cell, max_iter=500):
+    """Boolean mask of KNOWN-FREE cells connected to start_cell through free,
+    non-blocked space only (never crossing unknown or walls). Iterative 4-neighbour
+    flood fill, pure numpy. Used so roam only targets places it can actually get to."""
+    free = grid.prob() < FREE_THRESH
+    passable = free & (~blocked)
+    reach = np.zeros_like(passable)
+    sc, sr = start_cell
+    n = grid.n
+    if not (0 <= sc < n and 0 <= sr < n):
+        return reach
+    reach[sr, sc] = True
+    prev = 0
+    for _ in range(max_iter):
+        g = reach.copy()
+        g[1:, :] |= reach[:-1, :]
+        g[:-1, :] |= reach[1:, :]
+        g[:, 1:] |= reach[:, :-1]
+        g[:, :-1] |= reach[:, 1:]
+        g &= passable
+        g |= reach
+        s = int(g.sum())
+        reach = g
+        if s == prev:
+            break
+        prev = s
+    return reach
 
 
 def _w2c(grid, x, y):
@@ -87,14 +118,15 @@ class PlanResult:
         self.reason = reason
 
 
-def plan(grid, start_xy, goal_xy, clearance_m=DEFAULT_CLEARANCE_M):
+def plan(grid, start_xy, goal_xy, clearance_m=DEFAULT_CLEARANCE_M, zones=None):
     """
     A* from start to goal. Returns PlanResult. Goal is REJECTED if it is a wall,
-    too close to one (inside the clearance), in unknown space, or unreachable.
+    too close to one (inside the clearance), in unknown space, in a keep-out
+    zone, or unreachable.
     """
     n = grid.n
     prob = grid.prob()
-    blocked = blocked_mask(grid, clearance_m)
+    blocked = blocked_mask(grid, clearance_m, zones=zones)
 
     sc, sr = _w2c(grid, *start_xy)
     gc, gr = _w2c(grid, *goal_xy)
@@ -183,6 +215,20 @@ class NavConfig:
         self.clear_frames = 3          # consecutive clear reads before resuming
         self.replan_m = 0.6            # if pushed this far off-path, replan
         self.rate_hz = 10.0
+        # v2.1: stuck detection (invisible obstacle the LiDAR can't see)
+        self.stuck_secs = 1.6          # commanded-forward but no progress this long => stuck
+        self.stuck_progress_m = 0.06   # "progress" threshold over that window
+        self.auto_obstacle_r = 0.10    # radius of the keep-out blob we stamp
+        self.recover_secs = 0.8        # back up this long after getting stuck
+        self.recover_vx = 0.08         # reverse speed during recovery (m/s)
+        # v2.1: roam
+        self.roam_min_hop_m = 0.7      # don't pick a roam goal closer than this
+        self.roam_max_hop_m = 3.0      # ...or farther than this (stay near, don't bolt to a far room)
+        self.roam_samples = 48         # candidate cells sampled per roam pick
+        # adaptive re-planning: recompute the path on the current map so a stale
+        # path (new wall, closed door, drift) gets corrected instead of followed
+        self.replan_period_s = 1.5
+        self.replan_fail_limit = 2     # consecutive failed replans before declaring blocked
 
 
 def _wrap(a):
@@ -190,47 +236,113 @@ def _wrap(a):
 
 
 class NavController:
-    def __init__(self, core, drive, cfg: NavConfig | None = None, start_thread=True):
+    def __init__(self, core, drive, cfg: NavConfig | None = None,
+                 keepout=None, start_thread=True):
         self.core = core
         self.drive = drive                  # drive(vx, vy, wz)
         self.cfg = cfg or NavConfig()
+        self.keepout = keepout              # KeepoutStore or None
         self.state = "idle"                 # idle|driving|paused|arrived|blocked
         self.goal = None
+        self._active_goal = None            # goal we re-plan toward
         self.path = []
         self.reason = ""
         self._block_ct = 0
         self._clear_ct = 0
+        # route / roam
+        self.route = []
+        self.route_i = 0
+        self.loop = False
+        self.roam = False
+        self._visited = []
+        # stuck tracking
+        self._anchor = None
+        self._anchor_t = 0.0
+        self._recover_until = 0.0
+        self._last_replan_t = 0.0
+        self._replan_fails = 0
         self._lock = _threading.Lock()
         if start_thread:
             self._thread = _threading.Thread(target=self._loop, daemon=True)
             self._thread.start()
 
-    # ---- public API ------------------------------------------------------
-    def set_goal(self, x, y):
+    # ---- planning core (used by goal / route / roam / stuck replan) -------
+    def _plan_to(self, x, y):
         res = plan(self.core.grid, (self.core.pose[0], self.core.pose[1]),
-                   (x, y), clearance_m=self.cfg.clearance_m)
+                   (x, y), clearance_m=self.cfg.clearance_m, zones=self.keepout)
         with self._lock:
             if not res.ok:
                 self.reason = res.reason
                 return False, res.reason
             self.goal = (x, y)
+            self._active_goal = (x, y)
             self.path = _densify(list(res.path))
             self.state = "driving"
             self.reason = ""
             self._block_ct = self._clear_ct = 0
+            self._reset_progress()
+        return True, ""
+
+    def _replan(self):
+        """Recompute the path to the active goal on the current map, preserving
+        nav state and stuck-progress (unlike _plan_to). Adopts the new path if
+        valid; after repeated failures, stops and reports blocked."""
+        if not self._active_goal:
+            return
+        res = plan(self.core.grid, (self.core.pose[0], self.core.pose[1]),
+                   self._active_goal, clearance_m=self.cfg.clearance_m, zones=self.keepout)
+        with self._lock:
+            if res.ok:
+                self.path = _densify(list(res.path))
+                self._replan_fails = 0
+                if self.state in ("paused", "blocked"):
+                    self.state = "driving"; self.reason = ""
+                    self._block_ct = self._clear_ct = 0
+            else:
+                self._replan_fails += 1
+                self.reason = res.reason
+                if self._replan_fails >= self.cfg.replan_fail_limit:
+                    self.path = []
+                    self.state = "blocked"
+
+    # ---- public API ------------------------------------------------------
+    def set_goal(self, x, y):
+        # an explicit click overrides roam/route
+        with self._lock:
+            self.route = []; self.roam = False
+        return self._plan_to(x, y)
+
+    def set_route(self, points, loop=True):
+        pts = [(float(a), float(b)) for a, b in points]
+        with self._lock:
+            self.route = pts; self.loop = bool(loop); self.route_i = 0; self.roam = False
+        if not pts:
+            return False, "empty route"
+        return self._plan_to(*pts[0])
+
+    def set_roam(self, on):
+        with self._lock:
+            self.roam = bool(on)
+            if on:
+                self.route = []
+            else:
+                self.goal = None; self.path = []; self.state = "idle"
+        if not on:
+            self.drive(0.0, 0.0, 0.0)
         return True, ""
 
     def cancel(self):
         with self._lock:
-            self.goal = None
-            self.path = []
+            self.goal = self._active_goal = None
+            self.path = []; self.route = []; self.roam = False
             self.state = "idle"
         self.drive(0.0, 0.0, 0.0)
 
     def snapshot(self):
         with self._lock:
-            return dict(state=self.state, goal=self.goal,
-                        path=list(self.path), reason=self.reason)
+            return dict(state=self.state, goal=self.goal, path=list(self.path),
+                        reason=self.reason, roam=self.roam,
+                        route=list(self.route), route_i=self.route_i, loop=self.loop)
 
     # ---- obstacle check (forward cone in body frame) ---------------------
     def _blocked_ahead(self):
@@ -243,6 +355,59 @@ class NavController:
         near = fwd & (r < self.cfg.stop_dist_m)
         return bool(near.sum() >= 2)        # a couple of points, not a lone fleck
 
+    # ---- stuck detection (LiDAR-invisible obstacle) ----------------------
+    def _reset_progress(self):
+        self._anchor = (self.core.pose[0], self.core.pose[1])
+        self._anchor_t = _time.time()
+
+    def _check_stuck(self, x, y, th):
+        """Called only while commanding forward motion. True if we handled a stuck."""
+        if self._anchor is None:
+            self._reset_progress(); return False
+        if _math.hypot(x - self._anchor[0], y - self._anchor[1]) > self.cfg.stuck_progress_m:
+            self._reset_progress()
+            return False
+        if _time.time() - self._anchor_t < self.cfg.stuck_secs:
+            return False
+        # stuck: stamp a keep-out blob just ahead, then back up and re-plan
+        self.drive(0.0, 0.0, 0.0)
+        ahead = 0.35
+        ox, oy = x + ahead * _math.cos(th), y + ahead * _math.sin(th)
+        if self.keepout is not None:
+            self.keepout.add_circle(ox, oy, self.cfg.auto_obstacle_r, auto=True)
+        self._reset_progress()
+        with self._lock:
+            self.state = "recovering"
+            self._recover_until = _time.time() + self.cfg.recover_secs
+        return True
+
+    # ---- roam goal picker ------------------------------------------------
+    def _pick_roam_goal(self):
+        g = self.core.grid
+        blocked = blocked_mask(g, self.cfg.clearance_m, zones=self.keepout)
+        sc, sr = _w2c(g, self.core.pose[0], self.core.pose[1])
+        ok_cells = reachable_free(g, blocked, (sc, sr))   # only what's truly connected
+        js, is_ = np.where(ok_cells)
+        if len(js) == 0:
+            return None
+        x, y = self.core.pose[0], self.core.pose[1]
+        k = min(self.cfg.roam_samples, len(js))
+        sel = np.random.choice(len(js), size=k, replace=False)
+        best, best_score = None, -1.0
+        for s in sel:
+            wx = g.ox + (is_[s] + 0.5) * g.res
+            wy = g.oy + (js[s] + 0.5) * g.res
+            dxy = _math.hypot(wx - x, wy - y)
+            if dxy < self.cfg.roam_min_hop_m or dxy > self.cfg.roam_max_hop_m:
+                continue
+            if self._visited:
+                nd = min(_math.hypot(wx - vx, wy - vy) for vx, vy in self._visited[-25:])
+            else:
+                nd = _math.hypot(wx - x, wy - y)   # novelty = far from recent visits
+            if nd > best_score:
+                best_score, best = nd, (wx, wy)
+        return best
+
     # ---- main control loop ----------------------------------------------
     def _loop(self):
         dt = 1.0 / self.cfg.rate_hz
@@ -253,14 +418,69 @@ class NavController:
     def tick(self):
         with self._lock:
             state, path, goal = self.state, list(self.path), self.goal
+            roam, route, loop, ri = self.roam, list(self.route), self.loop, self.route_i
+
+        # roaming: when not actively driving, pick the next random reachable spot
+        if roam and state in ("idle", "arrived", "blocked"):
+            g = self._pick_roam_goal()
+            if g:
+                self._plan_to(*g)
+            return
+
+        # recovery: back up briefly after a stuck event, then re-plan around the
+        # freshly-stamped obstacle
+        if state == "recovering":
+            if _time.time() < self._recover_until:
+                self.drive(-self.cfg.recover_vx, 0.0, 0.0)
+                return
+            self.drive(0.0, 0.0, 0.0)
+            if self._active_goal:
+                ok, _ = self._plan_to(*self._active_goal)
+                if not ok:
+                    with self._lock:
+                        self.state = "blocked"; self.reason = "stuck — no way around"
+            else:
+                with self._lock:
+                    self.state = "idle"
+            return
+
+        # adaptive re-planning: periodically recompute the path to the active goal
+        # on the CURRENT map, so a stale path (new wall, closed door, drift) gets
+        # corrected. Also lets a blocked/paused robot find a way around once the
+        # obstacle has been mapped (which, with the motion gate, happens once stopped).
+        if self._active_goal and state in ("driving", "paused", "blocked"):
+            if _time.time() - self._last_replan_t >= self.cfg.replan_period_s:
+                self._last_replan_t = _time.time()
+                self._replan()
+                with self._lock:
+                    state, path, goal = self.state, list(self.path), self.goal
+
         if state not in ("driving", "paused", "blocked") or not path:
             return
 
         x, y, th = self.core.pose
 
-        # arrival
+        # arrival -> advance route / roam / finish
         if goal and _math.hypot(goal[0] - x, goal[1] - y) < self.cfg.arrive_m:
             self.drive(0.0, 0.0, 0.0)
+            self._visited.append((x, y))
+            if route:
+                if loop:
+                    ni = (ri + 1) % len(route)
+                else:
+                    ni = ri + 1
+                if (not loop) and ni >= len(route):
+                    with self._lock:
+                        self.state = "arrived"; self.path = []; self.route = []
+                    return
+                with self._lock:
+                    self.route_i = ni
+                self._plan_to(*route[ni])
+                return
+            if roam:
+                with self._lock:
+                    self.state = "arrived"; self.path = []
+                return
             with self._lock:
                 self.state = "arrived"; self.path = []
             return
@@ -270,6 +490,7 @@ class NavController:
             self._block_ct += 1; self._clear_ct = 0
             if self._block_ct >= self.cfg.block_frames:
                 self.drive(0.0, 0.0, 0.0)
+                self._reset_progress()
                 with self._lock:
                     self.state = "paused"
                 return
@@ -291,8 +512,11 @@ class NavController:
         err = _wrap(desired - th)
         wz = max(-self.cfg.wz_max, min(self.cfg.wz_max, self.cfg.turn_gain * err))
         if abs(err) > self.cfg.turn_in_place:
-            self.drive(0.0, 0.0, wz)          # rotate toward path first
+            self._reset_progress()                # turning in place; no translation expected
+            self.drive(0.0, 0.0, wz)
         else:
+            if self._check_stuck(x, y, th):        # invisible-obstacle handling
+                return
             self.drive(self.cfg.cruise_vx, 0.0, wz)
 
     def _lookahead_target(self, x, y, path):

@@ -44,6 +44,13 @@ class SlamConfig:
     update_field_every: int = 2     # rebuild likelihood field every N frames
     field_radius_m: float = 6.5     # only rebuild field within this radius of robot
     vel_scale: float = 1.0          # commanded-vel -> real-vel calibration
+    # MAP-WRITE motion gate (localisation + obstacle detection always stay on;
+    # only committing scans into the map is gated). A moving scan — especially
+    # mid-turn on a spinning LiDAR — smears, so by default we only write the map
+    # when essentially stopped. Raise these (or use --map-while-moving) to also
+    # map during slow straight travel.
+    map_gate_v: float = 0.05        # m/s; above this, skip map writes
+    map_gate_wz: float = 0.08       # rad/s; above this (turning), skip map writes
 
 
 class SlamCore:
@@ -58,7 +65,7 @@ class SlamCore:
         self.last_scan_world = (np.array([]), np.array([]))
         self.last_scan = (np.array([]), np.array([]))   # body frame
         self.lock = threading.Lock()
-        self.stats = {"matched": 0, "coasted": 0, "gated": 0, "score": 0.0}
+        self.stats = {"matched": 0, "coasted": 0, "gated": 0, "moving": 0, "score": 0.0}
 
     # ---- prior from motion hint -----------------------------------------
     def _predict(self, hint: MotionHint):
@@ -110,16 +117,26 @@ class SlamCore:
             self.stats["matched"] += 1
             self.stats["score"] = round(spp, 3)
 
-        # Map update (skipped when the body is tilting badly mid-stride).
+        # Map WRITE is gated when the body is tilting badly (mid-stride) OR when
+        # moving: a moving scan (especially mid-turn on a spinning LiDAR) smears,
+        # so we localise against the existing map but don't commit the smeared
+        # scan into it. Localisation + obstacle detection above are unaffected.
+        speed = math.hypot(hint.vx, hint.vy)
+        moving = speed > self.cfg.map_gate_v or abs(hint.wz) > self.cfg.map_gate_wz
+        write_map = (not gated) and (not moving)
         if gated:
             self.stats["gated"] += 1
-            self._record_scan_world(angles, ranges, write_map=False)
-        else:
-            self._record_scan_world(angles, ranges, write_map=True)
-            self._frame += 1
-            if self._frame % self.cfg.update_field_every == 0:
-                self._field = scan_match.build_likelihood_field(
-                    self.grid, center=self.pose[:2], radius_m=self.cfg.field_radius_m)
+        elif moving:
+            self.stats["moving"] += 1
+        self._record_scan_world(angles, ranges, write_map=write_map)
+
+        # Keep the localisation field centred on the robot whether or not we wrote
+        # the map — otherwise, while moving (no writes), we'd drift out of the
+        # field window and lose tracking.
+        self._frame += 1
+        if self._field is None or self._frame % self.cfg.update_field_every == 0:
+            self._field = scan_match.build_likelihood_field(
+                self.grid, center=self.pose[:2], radius_m=self.cfg.field_radius_m)
 
         self._push_trail()
         return self.pose
@@ -154,6 +171,23 @@ class SlamCore:
                 self.trail.popleft()
 
     # ---- persistence -----------------------------------------------------
+    def reset_map(self, keep_heading=True):
+        """Wipe the map, trail, and recenter to the origin — a clean restart
+        without killing the process. Keeps the current heading by default so the
+        IMU heading prior stays consistent; the next scan rebuilds the map from
+        scratch around the new origin."""
+        with self.lock:
+            self.grid.log[:] = 0.0
+            self.trail.clear()
+            th = self.pose[2] if keep_heading else 0.0
+            self.pose = (0.0, 0.0, th)
+            if not keep_heading:
+                self._yaw_bias = None       # re-established on next update
+            self._field = None
+            self._frame = 0
+            self.last_scan = (np.array([]), np.array([]))
+            self.last_scan_world = (np.array([]), np.array([]))
+
     def save_map(self, path):
         self.grid.save(path)
 

@@ -1,4 +1,4 @@
-# Corndog SLAM (v2.0)
+# Corndog SLAM (v2.3)
 
 Pure-Python 2D LiDAR SLAM for the Corndog quadruped. No ROS. Builds a live
 occupancy-grid map and tracks where Corndog is on it while you walk it around.
@@ -16,6 +16,68 @@ following it, hard-stops for anything that appears in front, and arrives within
 ~10 cm. Plus a new canvas UI (pan/zoom, STOP, named "spots"), a 35x24 cm oriented
 footprint box, and one-time relocalization when you resume a saved map.
 
+**v2.1 adds keep-out awareness, autonomy, and a phone-friendly UI:**
+
+- **No-go zones** — switch the UI to *No-go* mode and drag a box over anything
+  that looks clear to the LiDAR but isn't safe (rugs, carpets, ledges). Zones are
+  saved next to the map (`<map>.nogo.json`), so they persist across restarts, and
+  the planner refuses to route through them. *Clear no-go* wipes them.
+- **Stuck detection** — if Corndog is commanded forward but his SLAM pose barely
+  advances for ~1.6 s, he assumes there's an unmapped obstacle, stamps a small
+  keep-out blob just ahead (it joins the same persistent layer, shown in orange),
+  backs up briefly, and re-plans around it.
+- **Roam** — a toggle that sends him to random *reachable* spots (respecting the
+  clearance), biased toward places he hasn't been recently. He only picks spots
+  *connected to where he currently is through mapped open space* — he won't try to
+  reach a previously-seen area by cutting across unmapped/unknown space. Good for
+  "just go wander the apartment."
+- **Route loops** — *Route* mode: tap several stops, hit *Start loop*, and he
+  cycles them in order, repeating.
+- **Phone-friendly UI** — one-finger drag pans, **two-finger pinch zooms**, a tap
+  acts; the page no longer hijack-zooms on mobile and the buttons grow on small
+  screens.
+- **Clearance is now 15 cm** by default (was 10 cm).
+- **Reset map** button (UI) — wipes the map, trail, saved spots and no-go zones
+  and starts a fresh map from where he's standing, without restarting the script.
+  Handy for re-running a test.
+
+A single explicit goal click always overrides roam/route.
+
+**v2.2 adds loop closure (background pose-graph optimisation):** the frontend's
+scan-to-map matching drifts slowly over long runs — you see it as walls that
+don't quite line up when you return to a room. A background thread now drops a
+*keyframe* (pose + scan) every ~0.5 m, ties consecutive ones with odometry edges,
+and when a new keyframe lands near an old one it confirms the revisit with a
+scan-to-scan match against a clean *local* field (so global drift can't fool the
+check). A confirmed revisit adds a loop constraint; the SE(2) pose graph is then
+optimised (pure-numpy Gauss-Newton, no scipy) and the map is rebuilt from the
+corrected keyframe poses, with the live pose and heading nudged to match. This is
+the main lever for turning "arrives within ~10 cm *on the map*" into "within
+~10 cm *physically*" on long multi-loop runs. It runs only when a revisit is
+detected, throttled so the Pi isn't taxed. It is **off by default** (it can
+disturb live tracking); enable with `--loopclose`.
+
+**v2.3 — drift control + adaptive navigation:**
+
+- **Motion-gated mapping.** Localisation and obstacle detection run every frame as
+  always, but the map is only *written* when the robot is essentially stopped (and
+  never mid-turn). A moving scan — especially during a turn, when the spinning
+  LiDAR builds one revolution over ~180 ms — smears, and committing it thickens
+  walls and feeds drift. Gating the write keeps walls crisp and, because you then
+  localise against crisp walls, slows drift too. Default is near-stationary;
+  `--map-while-moving` also maps during straight travel (still skips turns).
+  The HUD's `mapskip` counter shows writes being held while moving.
+- **Adaptive re-planning.** The follower no longer tracks a path drawn once at the
+  start. It recomputes to the goal on the *current* map every ~1.5 s and whenever
+  blocked, so a stale path (new wall, closed door, drift) is corrected instead of
+  driven into — e.g. it will route to the open space beside a wall rather than
+  pushing into it.
+- **Roam stays local.** Roam now picks goals within a radius (default 3 m) of where
+  he is, so he wanders the area instead of bolting to a far room, and only to spots
+  reachable through mapped open space.
+- **Live SLAM readout** in the HUD: `SLAM Hz · match score · gated · mapskip`, for
+  diagnosing tracking at a glance.
+
 ## Where this folder goes
 Drop the whole `Slam/` folder into your main Corndog directory, next to
 `MoveLib.py`:
@@ -31,6 +93,7 @@ Corndog/                      <- your main folder
     validate_sim.py           <- optional offline accuracy check
     README.md
     core.py  occupancy.py  scan_match.py  render.py  sim.py
+    nav.py  relocalize.py  waypoints.py  keepout.py  web_server.py
     slam_bridge.py  slam_lidar.py  slam_map_server.py  slam_app.py
 ```
 
@@ -102,12 +165,21 @@ On a laptop (for the demo): `pip3 install numpy pillow`.
 - **LiDAR auto-resync** (v2): the A1's occasional startup byte-mismatch now
   retries/reconnects automatically instead of needing a restart.
 
-## Deferred to v2.1 (as agreed)
-**Loop closure + pose-graph optimisation** (removes the slow global drift on long
-multi-loop runs — the faint wall-doubling in the sim image, and the main thing
-between "arrives within ~10 cm on the map" and "within ~10 cm physically"),
-sub-5 cm resolution, autonomous explore/auto-mapping, and dynamic obstacle
-*re-routing* (today he hard-stops and waits rather than planning around).
+## Delivered in v2.1
+No-go zones, stuck-detection with auto-obstacle + reroute, roam, route loops, the
+phone-friendly UI, and 15 cm clearance (see the v2.1 summary up top). Roam covers
+most of what "autonomous explore" was meant to do, and stuck-detection is a first
+cut at dynamic re-routing around things the map didn't know about.
+
+## Delivered in v2.2
+**Loop closure + pose-graph optimisation** (see the v2.2 summary up top) — removes
+the slow global drift on long multi-loop runs, the main thing between "arrives
+within ~10 cm *on the map*" and "within ~10 cm *physically*."
+
+## Next
+Tighter integration of the loop-corrected map with relocalisation, and optional
+sub-5 cm resolution (still deferred on purpose — compute budget — and won't change
+silently).
 
 ## Bring-up calibration (once, on the robot)
 Two sign conventions can't be known until it's on Corndog. Each is a one-line flip:
@@ -132,10 +204,15 @@ render.py          grid + overlays -> image (shared by web view + sim)
 sim.py             hardware-free simulator (floorplan, foot-slip, body bob)
 slam_bridge.py     [robot] BNO08x + gait engine -> motion hint
 slam_lidar.py      [robot] RPLIDAR reader thread
-nav.py             A* planner (configurable clearance) + pure-pursuit follower + obstacle stop
+nav.py             A* planner (15 cm clearance, keep-out aware) + pure-pursuit follower,
+                   obstacle stop, route loops, roam, stuck-detection + reroute
 relocalize.py      global "where am I" search for a loaded map
-web_server.py      canvas/JSON web UI (click-to-go, pan/zoom, STOP, waypoints, footprint box)
+web_server.py      canvas/JSON web UI: Go / Route / No-go modes, Roam toggle, pinch-zoom,
+                   click-to-go, STOP, waypoints, footprint box
 waypoints.py       named map locations, saved next to the map
+keepout.py         persistent no-go zones + auto-obstacles, saved next to the map
+pose_graph.py      SE(2) pose-graph Gauss-Newton optimiser (pure numpy, no scipy)
+loop_closure.py    keyframe graph: revisit detection + optimise + map rebuild (background)
 slam_map_server.py old MJPEG map view (superseded by web_server.py; kept as fallback)
 slam_app.py        [robot] launcher internals (called by run_robot.py)
 run_robot.py       ON-ROBOT entry point

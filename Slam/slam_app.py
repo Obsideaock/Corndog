@@ -26,6 +26,8 @@ import web_server
 import nav as navmod
 import relocalize
 from waypoints import WaypointStore
+from keepout import KeepoutStore
+from loop_closure import LoopCloser
 
 
 def run_slam_loop(core: SlamCore, lidar: LidarReader,
@@ -110,6 +112,12 @@ def main():
     ap.add_argument("--save", default="corndog_map.npz")
     ap.add_argument("--size", type=float, default=20.0, help="map side length (m)")
     ap.add_argument("--res", type=float, default=0.05, help="cell size (m)")
+    ap.add_argument("--loopclose", action="store_true",
+                    help="enable background loop-closure / pose-graph optimisation "
+                         "(OFF by default — it can disturb live tracking on long runs)")
+    ap.add_argument("--map-while-moving", action="store_true",
+                    help="also build the map during straight travel (still gated on "
+                         "turns); default only maps when essentially stopped")
     args = ap.parse_args()
     control = "none" if args.no_control else args.control
 
@@ -122,8 +130,14 @@ def main():
         except Exception as e:
             print(f"[Corndog] stand-up skipped: {e}")
 
-    core = SlamCore(SlamConfig(size_m=args.size, res=args.res,
-                               vel_scale=slam_bridge.VEL_SCALE))
+    _scfg = SlamConfig(size_m=args.size, res=args.res, vel_scale=slam_bridge.VEL_SCALE)
+    if args.map_while_moving:
+        _scfg.map_gate_v = 0.30        # allow mapping during straight walking
+        _scfg.map_gate_wz = 0.15       # ...but still skip turns (the main smear source)
+        print("[SLAM] map-while-moving: mapping during straight travel, gated on turns")
+    else:
+        print("[SLAM] map writes gated to near-stationary (localisation stays live)")
+    core = SlamCore(_scfg)
     map_path = args.save
     if args.load:
         core.load_map(args.load)
@@ -156,8 +170,12 @@ def main():
                   "drive him a few metres and tracking will lock on.")
 
     wp = WaypointStore(map_path)
-    nav_ctrl = navmod.NavController(core, mlib.gait_command)
-    web_server.serve(core, nav_ctrl, wp)
+    ko = KeepoutStore(map_path)
+    nav_ctrl = navmod.NavController(core, mlib.gait_command, keepout=ko)
+    loop_closer = LoopCloser(core, start_thread=True) if args.loopclose else None
+    if loop_closer:
+        print("[SLAM] loop closure ENABLED (background pose-graph optimisation)")
+    web_server.serve(core, nav_ctrl, wp, ko, loop_closer)
     threading.Thread(target=run_slam_loop, args=(core, lidar, args.save),
                      daemon=True).start()
     print("[SLAM] running — open http://<pi-ip>:8001/  (click the map to send him there)")
