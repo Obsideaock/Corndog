@@ -42,7 +42,7 @@ output_enable = OutputDevice(OE_PIN, active_high=False)
 
 # Define the servo channels and positions
 servo_channels = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
-servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9: 135, 10: 73, 11: 204, 14: 235, 15: 33}
+servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9: 135, 10: 78, 11: 204, 14: 235, 15: 33}
 TURN_SCALE = 0.2
 LEFT_CHANNELS  = {15, 11,  0,  4}  # FL ankle, FL thigh, BL ankle, BL thigh
 RIGHT_CHANNELS = {14, 10,  1,  5}  # FR ankle, FR thigh, BR ankle, BR thigh
@@ -303,7 +303,7 @@ CHANNEL_MAP = {
 }
 
 _MAPPING_RIGHT = {
-	1: {1:{'sign':-1,'offset':228}, 2:{'sign':-1,'offset':112}, 3:{'sign':-1,'offset':165}},
+	1: {1:{'sign':-1,'offset':228}, 2:{'sign':-1,'offset':117}, 3:{'sign':-1,'offset':165}},
 	3: {1:{'sign':+1,'offset':35},  2:{'sign':-1,'offset':89},  3:{'sign':-1,'offset':161}},
 }
 
@@ -953,22 +953,55 @@ def create_gui():
 		show_only(shake_arm_button, unsit_button, wave_button, limp_button, seizure_button)
 
 	def seizure():
-		lcd.lcd("Seizing")
+		lcd.lcd("Jumping")
+		iklegs_move({0:(0,0,-0.03),1:(0,0,-0.03),2:(0,0,-0.05),3:(0,0,-0.05)}, speed=50, delay=0)
+		time.sleep(2)
+		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, speed=50, delay=0)
+		lcd.clear()
+		"""lcd.lcd("Seizing")
 		move_motors({0:40, 1:-40, 4:40, 5:40, 6:40, 7:-40, 8:40, 9:-40, 10:40, 11:40, 14:40, 15:-60}, speed_multiplier=20)
 		time.sleep(2)
 		move_motors({6:-40, 7:40, 8:-40, 9:40})
 		time.sleep(0.5)
 		move_motors({0:-40, 1:40, 4:-40, 5:-40, 10:-40, 11:-40, 14:-40, 15:60})
-		lcd.clear()
+		lcd.clear()"""
 
 	def jump():
+		# --- tunables -------------------------------------------------
+		FRONT, BACK = (0, 1), (2, 3)   # 0/1 = front L/R, 2/3 = back L/R
+		CROUCH_Z   = 0.05   # load depth (positive = crouch, feet toward body)
+		FRONT_EXT  = -0.055  # front push-off (more negative = harder push)
+		BACK_EXT   = -0.065  # back push-off
+		X_BIAS     = 0.0     # horizontal nudge to cancel drift; tune in ±0.005
+		TUCK_Z     = 0.2    # retract feet mid-air so they clear the ground
+		LAND_Z     = 0.02    # land in a slight crouch to absorb impact
+		# --------------------------------------------------------------
+
 		lcd.lcd("Charging jump")
-		iklegs_move({0:(0,0,0.05),1:(0,0,0.05),2:(0,0,0.05),3:(0,0,0.05)}, step_multiplier=20, speed=0.05)
-		time.sleep(1)
+		# slow, even load so every servo is seated before launch
+		iklegs_move({i: (0, 0, CROUCH_Z) for i in range(4)},
+					step_multiplier=20, speed=0.05)
+		time.sleep(0.15)
+
 		lcd.lcd("Jumping")
-		iklegs_move({0:(0,0,-0.05),1:(0,0,-0.05),2:(0,0,-0.05),3:(0,0,-0.05)}, speed=50, delay=0)
-		time.sleep(0.2)
-		iklegs_move({0:(0,0,0),1:(0,0,0),2:(0,0,0),3:(0,0,0)}, speed=50, delay=0)
+		# explosive extension: high speed -> 1 internal step -> all legs fire at once
+		launch = {}
+		for i in FRONT: launch[i] = (X_BIAS, 0, FRONT_EXT)
+		for i in BACK:  launch[i] = (X_BIAS, 0, BACK_EXT)
+		iklegs_move(launch, step_multiplier=10, speed=1000, delay=0)
+
+		# tuck immediately so feet don't drag/catch on the way up
+		time.sleep(0.08)
+		iklegs_move({i: (0, 0, TUCK_Z) for i in range(4)},
+					step_multiplier=10, speed=1000, delay=0)
+
+		# land soft in a crouch, then rise to neutral
+		time.sleep(0.10)
+		iklegs_move({i: (0, 0, LAND_Z) for i in range(4)},
+					step_multiplier=15, speed=0.08)
+		time.sleep(0.12)
+		iklegs_move({i: (0, 0, 0) for i in range(4)},
+					step_multiplier=15, speed=0.08)
 		lcd.clear()
 
 	def show_live_imu():

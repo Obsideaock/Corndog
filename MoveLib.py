@@ -1,23 +1,43 @@
-# MoveLib.py
+# MoveLib.py  (v2)
 # ---------------------------------------------------------------------------
 # Corndog MoveLib (single-file, no "resolve symbols"):
 # - Includes the hardware + IK code directly (PCA9685 servos + BNO08X IMU + IK)
 # - Includes a headless gait engine loop using the same tick-style process as gait_engine_app.py
 # - Includes "emotions" (sit/unsit, kneel/unkneel, shake, dance)
 #
+# v2 changes (all opt-in / toggleable, defaults preserve v1 behavior unless noted):
+#   MOTOR/IK LAYER
+#   - SERVO_WRITE_DEADBAND: skip redundant I2C writes when a servo barely moved
+#   - MOVE_EASING: optional cosine ease-in/out for move_motors interpolation
+#   - speed_mode (kwarg or global SPEED_MODE): move_motors/iklegs_move slam every
+#     servo straight to its final target in one write — no interpolation, no
+#     synchronizing legs to finish together. For jumps etc.
+#   - iklegs_move inner loop no longer builds a numpy vector per leg per step
+#     (hip transform unrolled to scalar math; ~identical output, less CPU)
+#   GAIT ENGINE
+#   - real-dt phase advance (wall-clock measured, not assumed 50 ms) -> commanded
+#     speeds now mean what they say. NOTE: this is THE change that may shift the
+#     feel of your calibrated speeds slightly.
+#   - finish-the-step: on a zero command the engine settles all feet to stance
+#     before freezing (no more foot left hanging until the neutral reset)
+#   - velocity slew limiting (toggle): ramps between snapped stick velocities
+#   - central step-length clamp (toggle): scales (vx,vy,wz) together so no leg
+#     ever silently saturates its own IK reach -> straighter fast walking
+#   - soft-touchdown z profile (toggle, DEFAULT OFF): raised-cosine swing that
+#     lands with ~zero vertical speed instead of max-speed slap
+#   - inactivity neutral-reset delay is configurable (default lowered 1.5 -> 1.0 s)
+#   - set_gait_option(key, value): one string-keyed entry point so the Steam Deck
+#     (or anything else) can live-tune every knob above plus step_hz, swing_frac,
+#     step_height, speed_scale, height_offset, imu comp, gait type, and the
+#     joystick speed constants.
+#
 # Key behaviors:
 # - gait_command(vx, vy, wz):
 #     * nonzero starts the gait scheduler thread
-#     * zero stops the gait scheduler thread and (after 1.5s inactivity) resets legs to neutral
+#     * zero settles the step (if enabled), stops the gait scheduler thread and
+#       (after INACTIVITY_RESET_S of inactivity) resets legs to neutral
 # - stop_gait(schedule_inactivity_reset=False):
-#     * stops gait WITHOUT scheduling the 1.5s reset (use this for emotions)
-#
-# Joystick mapping:
-# - Left stick: 8-direction snap (±30° capture), binary motion
-#     * Cardinals use VX_SPEED / VY_SPEED (note: right => vy NEGATIVE to match your old mapping)
-#     * Diagonals scaled so resultant == DIAG_SPEED (pythagoras-correct, keeps vx/vy ratio)
-# - Right stick: analog yaw from rx with deadzone, AND fades to 0 as |ry| -> 1
-#     * preserves your old sign convention: rx>0 => wz NEGATIVE
+#     * stops gait WITHOUT scheduling the reset (use this for emotions)
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -67,6 +87,38 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 # =============================================================================
+# v2 MOTOR-LAYER TOGGLES (module-level; all default to v1 behavior)
+# =============================================================================
+
+# Degrees. If a servo's new target is within this of the last value actually
+# WRITTEN to the PCA9685, skip the I2C write (internal float state still
+# updates, so no error accumulates). 0.0 = off (v1 behavior).
+SERVO_WRITE_DEADBAND = 0.0
+
+# Cosine ease-in/out for move_motors interpolation (accelerate/decelerate
+# instead of constant speed). False = v1 linear behavior.
+MOVE_EASING = False
+
+# Global "speedmode": when True, move_motors / iklegs_move skip interpolation
+# entirely and slam each servo directly to its final angle in one write burst —
+# every leg moves as fast as it physically can, nothing waits for anything.
+# Per-call `speed_mode=` kwarg overrides this global.
+SPEED_MODE = False
+
+_last_written: Dict[int, float] = {}   # channel -> last angle actually sent
+
+
+def _servo_write(ch: int, angle: float, *, force: bool = False):
+	"""Single choke point for physical servo writes (deadband lives here)."""
+	if not force and SERVO_WRITE_DEADBAND > 0.0:
+		prev = _last_written.get(ch)
+		if prev is not None and abs(angle - prev) < SERVO_WRITE_DEADBAND:
+			return
+	servos[ch].angle = angle
+	_last_written[ch] = angle
+
+
+# =============================================================================
 # Hardware setup (PCA9685 + servos + output enable)
 # =============================================================================
 
@@ -81,7 +133,7 @@ servo_channels = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
 servo_home: Dict[int, float] = {
 	0: 39, 1: 231, 4: 222, 5: 50,
 	6: 128, 7: 130, 8: 133, 9: 135,
-	10: 73, 11: 204, 14: 235, 15: 33
+	10: 78, 11: 204, 14: 235, 15: 33
 }
 
 servos: Dict[int, servo.Servo] = {ch: servo.Servo(pca.channels[ch]) for ch in servo_channels}
@@ -111,12 +163,17 @@ def disable_servos():
 	output_enable.on()
 	for ch in servo_channels:
 		pca.channels[ch].duty_cycle = 0
+	_last_written.clear()
 
 
-def move_motors(movements: Dict[int, float], delay: float = 0.01, speed_multiplier: float = 10):
+def move_motors(movements: Dict[int, float], delay: float = 0.01,
+				speed_multiplier: float = 10, speed_mode: Optional[bool] = None):
 	"""
 	Relative multi-servo move with interpolation.
 	movements: {channel: delta_degrees}
+
+	speed_mode=True (or global SPEED_MODE): no interpolation — every channel is
+	written straight to its final target immediately. Use for jumps / bail-outs.
 	"""
 	def clamp_angle(a: float) -> float:
 		return max(0.0, min(270.0, a))
@@ -125,11 +182,21 @@ def move_motors(movements: Dict[int, float], delay: float = 0.01, speed_multipli
 	if not servo_angles:
 		initialize_servo_angles()
 
+	if speed_mode is None:
+		speed_mode = SPEED_MODE
+
 	channels = list(movements.keys())
 	relative_angles = list(movements.values())
 
 	current_angles = [servo_angles.get(ch, servo_home[ch]) for ch in channels]
 	target_angles = [clamp_angle(cur + rel) for cur, rel in zip(current_angles, relative_angles)]
+
+	if speed_mode:
+		# One write burst, no pacing, no synchronization.
+		for ch, tgt in zip(channels, target_angles):
+			servo_angles[ch] = tgt
+			_servo_write(ch, tgt, force=True)
+		return
 
 	max_step_count = 0.0
 	for t, c in zip(target_angles, current_angles):
@@ -137,32 +204,30 @@ def move_motors(movements: Dict[int, float], delay: float = 0.01, speed_multipli
 
 	adjusted_step_count = max(1, int(round(max_step_count / max(1e-9, speed_multiplier))))
 
-	increments = []
-	for t, c in zip(target_angles, current_angles):
-		increments.append((t - c) / adjusted_step_count if adjusted_step_count else 0.0)
+	deltas = [t - c for t, c in zip(target_angles, current_angles)]
 
-	current_positions = dict(zip(channels, current_angles))
-
-	for _ in range(adjusted_step_count):
+	for step in range(1, adjusted_step_count + 1):
+		frac = step / adjusted_step_count
+		if MOVE_EASING:
+			frac = 0.5 - 0.5 * math.cos(math.pi * frac)   # cosine ease in/out
 		for i, ch in enumerate(channels):
-			inc = increments[i]
-			if inc != 0:
-				new_angle = clamp_angle(current_positions[ch] + inc)
-				current_positions[ch] = new_angle
+			if deltas[i] != 0:
+				new_angle = clamp_angle(current_angles[i] + deltas[i] * frac)
 				servo_angles[ch] = new_angle
-				servos[ch].angle = new_angle
+				_servo_write(ch, new_angle)
 		time.sleep(delay)
 
+	# guarantee exact final angles regardless of deadband skips
 	for i, ch in enumerate(channels):
 		servo_angles[ch] = target_angles[i]
-		servos[ch].angle = target_angles[i]
+		_servo_write(ch, target_angles[i], force=True)
 
 
 def stand_up():
 	"""Home/stand routine (safe neutral)."""
 	def set_motor_angles(chs, positions):
 		for ch in chs:
-			servos[ch].angle = positions[ch]
+			_servo_write(ch, positions[ch], force=True)
 		time.sleep(0.5)
 
 	target = {ch: servo_home[ch] for ch in servos}
@@ -285,7 +350,7 @@ CHANNEL_MAP = {
 
 # Right-leg-only MAPPING (left legs use mirrored deltas, not their own MAPPING)
 _MAPPING_RIGHT = {
-	1: {1: {'sign': -1, 'offset': 228}, 2: {'sign': -1, 'offset': 112}, 3: {'sign': -1, 'offset': 165}},
+	1: {1: {'sign': -1, 'offset': 228}, 2: {'sign': -1, 'offset': 117}, 3: {'sign': -1, 'offset': 165}},
 	3: {1: {'sign': +1, 'offset': 35},  2: {'sign': -1, 'offset': 89},  3: {'sign': -1, 'offset': 161}},
 }
 
@@ -300,6 +365,23 @@ _ht_body0 = homog_transxyz(0, 0, 0) @ homog_rotxyz(0, 0, 0)
 for _ri, _tf_fn in {1: t_rightfront, 3: t_rightback}.items():
 	_T = _tf_fn(_ht_body0, BODY_LEN, BODY_WID)
 	_INV_RIGHT[_ri] = ht_inverse(_T)
+
+# v2: unroll the (constant) 4x4 inverse hip transforms into plain python floats
+# so the per-leg-per-step transform is scalar math, not a numpy matmul.
+_INV_RIGHT_ROWS: Dict[int, Tuple[Tuple[float, ...], ...]] = {
+	ri: tuple(tuple(float(v) for v in _INV_RIGHT[ri][r]) for r in range(3))
+	for ri in _INV_RIGHT
+}
+
+
+def _hip_from_body(ri: int, xb: float, yb: float, zb: float) -> Tuple[float, float, float]:
+	r0, r1, r2 = _INV_RIGHT_ROWS[ri]
+	return (
+		r0[0]*xb + r0[1]*yb + r0[2]*zb + r0[3],
+		r1[0]*xb + r1[1]*yb + r1[2]*zb + r1[3],
+		r2[0]*xb + r2[1]*yb + r2[2]*zb + r2[3],
+	)
+
 
 _RIGHT_CFG = {
 	1: {'base': ( BODY_LEN/2, -BODY_WID/2, -0.16), 'scale': (-3/3.5*5/4, 1, 3/3.75)},
@@ -380,15 +462,67 @@ def _solve_decoupled(x_h, y_h, z_h, l1, l2, l3, x4_home, y4_home, *, max_up=2.0,
 	return None, None, None, None, None
 
 
-def iklegs_move(leg_offsets: Dict[int, Tuple[float, float, float]], step_multiplier=10, speed=10, delay=0.01):
+def _leg_servo_targets(leg_idx: int, ux: float, uy: float, uz: float) -> Optional[Dict[int, float]]:
+	"""Absolute servo targets for one leg at user-space offset (ux,uy,uz).
+	Returns {channel: absolute_angle} or None if IK failed."""
+	if leg_idx in _MIRROR_PAIR:
+		uy = -uy
+	ri = leg_idx if leg_idx in (1, 3) else _MIRROR_PAIR[leg_idx]
+	base = _RIGHT_CFG[ri]['base']
+	scale = _RIGHT_CFG[ri]['scale'] if leg_idx in (1, 3) else _LEFT_SCALE[leg_idx]
+	xb = base[0] + ux * scale[0]
+	yb = base[1] + uy * scale[1]
+	zb = base[2] + uz * scale[2]
+
+	hx0, hy0, _ = _HOME_HIP[ri]
+	px, py, pz = _hip_from_body(ri, xb, yb, zb)
+
+	q = _solve_decoupled(px, py, pz, L1, L2, L3, hx0, hy0)
+	if q[0] is None:
+		return None
+	q1, q2, q3, _, _ = q
+	user_deg = _to_user_right(ri, (q1, q2, q3))
+
+	out: Dict[int, float] = {}
+	if leg_idx in (1, 3):
+		for joint, tgt in enumerate(user_deg, start=1):
+			out[CHANNEL_MAP[leg_idx][joint]] = tgt
+	else:
+		for j in (1, 2, 3):
+			ch_R = CHANNEL_MAP[ri][j]
+			ch_L = CHANNEL_MAP[leg_idx][j]
+			delta_R = user_deg[j - 1] - _RIGHT_HOME_SERVO[ch_R]
+			out[ch_L] = servo_home[ch_L] + _MIRROR_SIGN[j] * delta_R
+	return out
+
+
+def iklegs_move(leg_offsets: Dict[int, Tuple[float, float, float]], step_multiplier=10,
+				speed=10, delay=0.01, speed_mode: Optional[bool] = None):
 	"""Move multiple legs together along straight-line paths in body-space.
-	Right legs compute via decoupled IK; left legs mirror from paired right leg."""
+	Right legs compute via decoupled IK; left legs mirror from paired right leg.
+
+	speed_mode=True (or global SPEED_MODE): solve final IK once and write every
+	servo straight to its target — all legs at max speed, no synchronization."""
 	def clamp_angle(a: float) -> float:
 		return max(0.0, min(270.0, a))
 
 	global servo_angles
 	if not servo_angles:
 		initialize_servo_angles()
+
+	if speed_mode is None:
+		speed_mode = SPEED_MODE
+
+	if speed_mode:
+		for leg_idx, (dx, dy, dz) in leg_offsets.items():
+			targets = _leg_servo_targets(leg_idx, dx, dy, dz)
+			if targets is None:
+				continue
+			for ch, tgt in targets.items():
+				tgt = clamp_angle(tgt)
+				servo_angles[ch] = tgt
+				_servo_write(ch, tgt, force=True)
+		return
 
 	max_steps = 0.0
 	for dx, dy, dz in leg_offsets.values():
@@ -404,49 +538,16 @@ def iklegs_move(leg_offsets: Dict[int, Tuple[float, float, float]], step_multipl
 		step_movements: Dict[int, float] = {}
 
 		for leg_idx, (inc_x, inc_y, inc_z) in incs.items():
-			ux = inc_x * s
-			uy = inc_y * s
-			uz = inc_z * s
-			
-			if leg_idx in _MIRROR_PAIR:
-				uy = -uy
-
-			# All legs route through their paired right leg's pipeline
-			ri = leg_idx if leg_idx in (1, 3) else _MIRROR_PAIR[leg_idx]
-			base = _RIGHT_CFG[ri]['base']
-			scale = _RIGHT_CFG[ri]['scale'] if leg_idx in (1, 3) else _LEFT_SCALE[leg_idx]
-			xb = base[0] + ux * scale[0]
-			yb = base[1] + uy * scale[1]
-			zb = base[2] + uz * scale[2]
-
-			P_body = np.array([xb, yb, zb, 1.0])
-			P_hip = _INV_RIGHT[ri] @ P_body
-			hx, hy, _ = _HOME_HIP[ri]
-
-			q = _solve_decoupled(P_hip[0], P_hip[1], P_hip[2], L1, L2, L3, hx, hy)
-			if q[0] is None:
+			targets = _leg_servo_targets(leg_idx, inc_x * s, inc_y * s, inc_z * s)
+			if targets is None:
 				continue
-			q1, q2, q3, _, _ = q
-			user_deg = _to_user_right(ri, (q1, q2, q3))
-
-			if leg_idx in (1, 3):
-				# Right leg: apply servo targets directly
-				for joint, tgt in enumerate(user_deg, start=1):
-					ch = CHANNEL_MAP[leg_idx][joint]
-					step_movements[ch] = tgt - servo_angles[ch]
-			else:
-				# Left leg: mirror servo deltas from right
-				for j in (1, 2, 3):
-					ch_R = CHANNEL_MAP[ri][j]
-					ch_L = CHANNEL_MAP[leg_idx][j]
-					delta_R = user_deg[j - 1] - _RIGHT_HOME_SERVO[ch_R]
-					target_L = servo_home[ch_L] + _MIRROR_SIGN[j] * delta_R
-					step_movements[ch_L] = target_L - servo_angles[ch_L]
+			for ch, tgt in targets.items():
+				step_movements[ch] = tgt - servo_angles[ch]
 
 		for ch, delta in step_movements.items():
 			new_ang = clamp_angle(servo_angles[ch] + delta)
-			servos[ch].angle = new_ang
 			servo_angles[ch] = new_ang
+			_servo_write(ch, new_ang)
 
 		time.sleep(delay)
 
@@ -541,7 +642,7 @@ def dance():
 			time.sleep(0.3)
 		iklegs_move({0:(0.0,0.0,0.0,),1:(0.0,0.0,0.0),2:(0.0,0.0,0.0),3:(0.0,0.0,0.0)}, step_multiplier=10, speed=20, delay=0.0)
 		_lcd_clear()
-		
+
 def shake():
 	with _motion_lock:
 		stop_gait(schedule_inactivity_reset=False)
@@ -555,7 +656,7 @@ def shake():
 		move_motors({10: -110, 14: 120}, speed_multiplier=25)
 		move_motors({14: -40}, speed_multiplier=25)
 		_lcd_msg("Sitting")
-		
+
 def wave():
 	with _motion_lock:
 		stop_gait(schedule_inactivity_reset=False)
@@ -638,7 +739,7 @@ class _AfterScheduler:
 
 
 # =============================================================================
-# Gait Engine (same tick/process style as gait_engine_app.py)
+# Gait Engine (same tick/process style as gait_engine_app.py) — v2
 # =============================================================================
 
 Vec3 = Tuple[float, float, float]
@@ -695,12 +796,42 @@ class GaitEngine:
 		self._alpha = 0.07
 		self._imu_enabled = True
 
+		# commanded (target) velocities
 		self.vx = 0.0
 		self.vy = 0.0
 		self.wz = 0.0
 
 		self.com_x = 0.0
 		self.com_y = 0.0
+
+		# ---- v2 feature toggles ------------------------------------------
+		# ALL default OFF so out-of-the-box behavior matches the original
+		# engine exactly; enable them one at a time from the Deck to compare.
+		self.use_real_dt = False         # phase advance by measured wall-clock dt
+		self.finish_step = False         # settle feet to stance before freezing
+		self.slew_enabled = False        # ramp velocity changes
+		self.slew_time = 0.25            # seconds to traverse full speed range
+		self.step_clamp = False          # central step-length clamp
+		self.max_step_len = 0.135        # m — longest per-cycle foot displacement
+		self.soft_touchdown = False      # raised-cosine z profile
+
+		# slew state (actual velocities used for trajectories)
+		self._svx = 0.0
+		self._svy = 0.0
+		self._swz = 0.0
+		# per-axis full-scale rates recomputed from slew_time in _slew()
+		self._slew_ref_v = 0.15
+		self._slew_ref_w = 1.00
+
+		# settle (finish-the-step) state
+		self._settling = False
+		self._settle_vx = 0.0
+		self._settle_vy = 0.0
+		self._settle_wz = 0.0
+		self._settle_deadline = 0.0
+		self._on_settled: Optional[Callable[[], Any]] = None
+
+		self._last_tick_t: Optional[float] = None
 
 		self._leg_xy = {
 			0: (+self._BL/2.0, +self._BW/2.0),
@@ -728,10 +859,13 @@ class GaitEngine:
 		if self._active:
 			return
 		self._active = True
+		self._last_tick_t = None
 		self._tick()
 
 	def stop(self):
 		self._active = False
+		self._settling = False
+		self._on_settled = None
 		if self._win and self._after_id is not None:
 			try:
 				self._win.after_cancel(self._after_id)
@@ -750,6 +884,22 @@ class GaitEngine:
 
 	def set_velocity(self, vx: float, vy: float, wz: float):
 		self.vx, self.vy, self.wz = float(vx), float(vy), float(wz)
+		if (abs(vx) + abs(vy) + abs(wz)) > 1e-6:
+			# any real command cancels a pending settle
+			self._settling = False
+			self._on_settled = None
+
+	def begin_settle(self, on_settled: Optional[Callable[[], Any]] = None):
+		"""Zero command received: finish current swings, land all feet, THEN
+		report settled. If nothing is mid-swing this fires almost immediately."""
+		self._settle_vx, self._settle_vy, self._settle_wz = self._svx, self._svy, self._swz
+		self.vx = self.vy = self.wz = 0.0
+		self._svx = self._svy = self._swz = 0.0
+		self._settling = True
+		self._on_settled = on_settled
+		# safety: never settle longer than ~1.2 gait cycles
+		cyc = 1.0 / max(1e-6, self.step_hz * max(0.05, self.speed_scale))
+		self._settle_deadline = time.monotonic() + 1.2 * cyc
 
 	def enable_imu(self, enabled: bool):
 		self._imu_enabled = bool(enabled)
@@ -760,19 +910,100 @@ class GaitEngine:
 	def set_height_offset(self, z: float):
 		self.height_offset = _clamp(float(z), -self.height_limit, self.height_limit)
 
+	def set_params(self, *, step_hz=None, swing_frac=None, base_step_height=None):
+		if step_hz is not None:
+			self.step_hz = _clamp(float(step_hz), 0.2, 2.5)
+		if swing_frac is not None:
+			self.swing_frac = _clamp(float(swing_frac), 0.05, 0.60)
+		if base_step_height is not None:
+			self.base_step_height = _clamp(float(base_step_height), 0.005, self.max_step_h)
+
+	def set_slew_reference(self, v_ref: float, w_ref: float):
+		"""Full-scale speeds the slew_time refers to (usually VX_SPEED / WZ_MAX)."""
+		self._slew_ref_v = max(1e-3, float(v_ref))
+		self._slew_ref_w = max(1e-3, float(w_ref))
+
+	# ----- internals -----
+
+	def _slew(self, dt: float):
+		"""Move actual velocities toward commanded velocities."""
+		if not self.slew_enabled or self.slew_time <= 1e-3:
+			self._svx, self._svy, self._swz = self.vx, self.vy, self.wz
+			return
+		rv = self._slew_ref_v / self.slew_time * dt   # max change this tick
+		rw = self._slew_ref_w / self.slew_time * dt
+
+		def step(cur, tgt, r):
+			d = tgt - cur
+			if d > r:  return cur + r
+			if d < -r: return cur - r
+			return tgt
+
+		self._svx = step(self._svx, self.vx, rv)
+		self._svy = step(self._svy, self.vy, rv)
+		self._swz = step(self._swz, self.wz, rw)
+
+	def _all_legs_in_stance(self) -> bool:
+		sfrac = _clamp(self.swing_frac, 0.05, 0.45)
+		for leg in (0, 1, 2, 3):
+			phi = (self.phase + self._phase_off[leg]) % 1.0
+			if phi < sfrac:
+				return False
+		return True
+
 	def _tick(self):
 		if not self._active:
 			return
 
+		# ---- real-dt measurement --------------------------------------
+		now = time.monotonic()
+		if self.use_real_dt and self._last_tick_t is not None:
+			dt = _clamp(now - self._last_tick_t, 0.0, 3.0 * self.dt)
+		else:
+			dt = self.dt
+		self._last_tick_t = now
+
+		self._slew(dt)
+
 		z_imu = self._compute_imu_dz() if self._imu_enabled else {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0}
 
-		if (abs(self.vx) + abs(self.vy) + abs(self.wz)) > 1e-6:
-			self.phase = (self.phase + (self.step_hz * self.speed_scale) * self.dt) % 1.0
+		settled_now = False
+		moving = (abs(self._svx) + abs(self._svy) + abs(self._swz)) > 1e-6
+
+		if self._settling:
+			# keep striding (using remembered velocity for foot geometry) until
+			# every foot is on the ground, then declare settled.
+			if self._all_legs_in_stance() or now >= self._settle_deadline:
+				self._settling = False
+				settled_now = True
+			else:
+				self.phase = (self.phase + (self.step_hz * self.speed_scale) * dt) % 1.0
+		elif moving:
+			self.phase = (self.phase + (self.step_hz * self.speed_scale) * dt) % 1.0
+
+		# velocities used for foot geometry this tick
+		if self._settling or settled_now:
+			gvx, gvy, gwz = self._settle_vx, self._settle_vy, self._settle_wz
+		else:
+			gvx, gvy, gwz = self._svx, self._svy, self._swz
+
+		# ---- central step-length clamp ---------------------------------
+		if self.step_clamp:
+			T = 1.0 / max(1e-6, self.step_hz)
+			worst = 0.0
+			for leg in (0, 1, 2, 3):
+				rx, ry = self._leg_xy[leg]
+				dxl = (gvx - gwz * ry) * T
+				dyl = (gvy + gwz * rx) * T
+				worst = max(worst, math.hypot(dxl, dyl))
+			if worst > self.max_step_len:
+				k = self.max_step_len / worst
+				gvx *= k; gvy *= k; gwz *= k
 
 		leg_offsets: Offsets = {}
 		for leg in (0, 1, 2, 3):
 			phi = (self.phase + self._phase_off[leg]) % 1.0
-			Dx, Dy = self._per_leg_body_displacement_per_cycle(leg)
+			Dx, Dy = self._per_leg_body_displacement_per_cycle(leg, gvx, gvy, gwz)
 			dx, dy, dz_traj = self._foot_trajectory(phi, Dx, Dy)
 
 			dz_gait_imu = _clamp(dz_traj + z_imu[leg], -self.z_soft_limit, self.z_soft_limit)
@@ -783,17 +1014,31 @@ class GaitEngine:
 
 		self._iklegs_move(leg_offsets, step_multiplier=1, speed=25, delay=0.0)
 
+		if settled_now:
+			cb, self._on_settled = self._on_settled, None
+			if cb is not None:
+				try:
+					cb()
+				except Exception as e:
+					print(f"[GaitEngine] settle callback error: {e}")
+				# the callback ends this tick chain no matter what: if it (or a
+				# racing command) restarted the engine, start() began its own
+				# chain — continuing here would double-tick.
+				return
+			if not self._active:
+				return
+
 		if self._win and self._win.winfo_exists():
 			self._after_id = self._win.after(self.dt_ms, self._tick)
 		else:
 			self._active = False
 			self._after_id = None
 
-	def _per_leg_body_displacement_per_cycle(self, leg: int) -> Tuple[float, float]:
+	def _per_leg_body_displacement_per_cycle(self, leg: int, vx: float, vy: float, wz: float) -> Tuple[float, float]:
 		T = 1.0 / max(1e-6, self.step_hz)
 		rx, ry = self._leg_xy[leg]
-		vx_leg = self.vx - self.wz * ry
-		vy_leg = self.vy + self.wz * rx
+		vx_leg = vx - wz * ry
+		vy_leg = vy + wz * rx
 		Dx = vx_leg * T
 		Dy = vy_leg * T
 		if abs(Dx) < 1e-6:
@@ -812,7 +1057,12 @@ class GaitEngine:
 			u = 0.5 - 0.5 * math.cos(math.pi * s)
 			dx = -x_half + Dx * u
 			dy = -y_half + Dy * u
-			dz = self._step_height_adapt() * math.sin(math.pi * s)
+			h = self._step_height_adapt()
+			if self.soft_touchdown:
+				# raised cosine: zero vertical speed at liftoff AND touchdown
+				dz = h * (0.5 - 0.5 * math.cos(2.0 * math.pi * s))
+			else:
+				dz = h * math.sin(math.pi * s)
 		else:
 			t = (phi - sfrac) / max(1e-9, (1.0 - sfrac))
 			dx = +x_half - Dx * t
@@ -826,7 +1076,6 @@ class GaitEngine:
 
 		gx, gy, gz = self._get_gravity()
 
-		# roll/pitch from gravity; tuned to match your previous app behavior
 		roll = math.atan2(-gy, gz)
 		pitch = math.atan2(gx, math.hypot(gy, gz))
 
@@ -865,7 +1114,9 @@ _ENGINE_LOCK = threading.Lock()
 _ENGINE: Optional[GaitEngine] = None
 _SCHED: Optional[_AfterScheduler] = None
 
-_INACTIVITY_RESET_S = 1.5
+# v2: configurable (was hard-coded). Default matches the original 1.5 s;
+# tune it live from the Deck ("inactivity_reset").
+INACTIVITY_RESET_S = 1.5
 _RESET_TIMER: Optional[threading.Timer] = None
 _STATE_LOCK = threading.Lock()
 _LAST_ACTIVE_T = 0.0
@@ -894,6 +1145,7 @@ def _ensure_engine() -> GaitEngine:
 		)
 		_ENGINE.set_gait("diagonal")
 		_ENGINE.enable_imu(False)  # IMPORTANT: IMU compensation disabled for gait (per request)
+		_ENGINE.set_slew_reference(VX_SPEED, WZ_MAX)
 		return _ENGINE
 
 
@@ -929,7 +1181,7 @@ def _schedule_reset_timer_locked():
 	global _RESET_TIMER
 	if _RESET_TIMER is not None:
 		return
-	t = threading.Timer(_INACTIVITY_RESET_S, _reset_to_neutral_if_still_inactive)
+	t = threading.Timer(INACTIVITY_RESET_S, _reset_to_neutral_if_still_inactive)
 	t.daemon = True
 	_RESET_TIMER = t
 	t.start()
@@ -941,7 +1193,7 @@ def _reset_to_neutral_if_still_inactive():
 	now = time.monotonic()
 	with _STATE_LOCK:
 		_RESET_TIMER = None
-		if (now - _LAST_ACTIVE_T) + 1e-6 < _INACTIVITY_RESET_S:
+		if (now - _LAST_ACTIVE_T) + 1e-6 < INACTIVITY_RESET_S:
 			return
 		if eng.is_active:
 			return
@@ -953,19 +1205,24 @@ def _reset_to_neutral_if_still_inactive():
 		print(f"[MoveLib] inactivity neutral reset failed: {e}")
 
 
+_SCHED_LOCK = threading.Lock()   # serializes scheduler start/stop transitions
+
+
 def stop_gait(*, schedule_inactivity_reset: bool = True):
 	"""
 	Stop gait immediately.
-	If schedule_inactivity_reset=False, DO NOT schedule the 1.5s neutral reset (use for emotions).
+	If schedule_inactivity_reset=False, DO NOT schedule the neutral reset (use for emotions).
 	"""
 	global _LAST_ACTIVE_T
 	eng = _ensure_engine()
 
-	# stop engine + scheduler
-	eng.set_velocity(0.0, 0.0, 0.0)
-	if eng.is_active:
-		eng.stop()
-	_shutdown_scheduler()
+	# stop engine + scheduler (locked so a simultaneous gait_command can't
+	# grab the dying scheduler between stop() and shutdown)
+	with _SCHED_LOCK:
+		eng.set_velocity(0.0, 0.0, 0.0)
+		if eng.is_active:
+			eng.stop()
+		_shutdown_scheduler()
 
 	with _STATE_LOCK:
 		_cancel_reset_timer_locked()
@@ -978,7 +1235,8 @@ def stop_gait(*, schedule_inactivity_reset: bool = True):
 def gait_command(vx: float, vy: float, wz: float):
 	"""
 	Nonzero -> start gait scheduler + walk/turn.
-	Zero    -> stop scheduler thread; after 1.5s inactivity -> neutral reset.
+	Zero    -> (v2) finish the current step so all feet land, THEN stop the
+	           scheduler; after INACTIVITY_RESET_S of inactivity -> neutral reset.
 	"""
 	global _LAST_ACTIVE_T
 
@@ -997,21 +1255,26 @@ def gait_command(vx: float, vy: float, wz: float):
 			_cancel_reset_timer_locked()
 
 	if active:
-		eng.set_velocity(vx, vy, wz)
-		if not eng.is_active:
-			_ensure_scheduler(eng)
-			eng.start()
+		with _SCHED_LOCK:
+			eng.set_velocity(vx, vy, wz)
+			if not eng.is_active:
+				_ensure_scheduler(eng)
+				eng.start()
 	else:
-		# stop and schedule inactivity reset
-		stop_gait(schedule_inactivity_reset=True)
+		if eng.finish_step and eng.is_active:
+			# settle feet first; stop_gait runs from the engine's own thread
+			# once every foot is in stance (or the safety deadline hits).
+			eng.begin_settle(on_settled=lambda: stop_gait(schedule_inactivity_reset=True))
+		else:
+			stop_gait(schedule_inactivity_reset=True)
 
 
 def joystick_to_cmd(
 	lx: float, ly: float,
 	rx: float, ry: float,
 	*,
-	left_deadzone: float = LEFT_DEADZONE,
-	right_deadzone: float = RIGHT_DEADZONE
+	left_deadzone: float = None,
+	right_deadzone: float = None
 ) -> Tuple[float, float, float]:
 	"""
 	Left stick: 8-direction snap, ±30° capture, binary motion.
@@ -1023,6 +1286,11 @@ def joystick_to_cmd(
 	  - as stick goes up/down (|ry|->1) => yaw -> 0
 	  - preserves your original sign: rx>0 => wz NEGATIVE
 	"""
+	if left_deadzone is None:
+		left_deadzone = LEFT_DEADZONE
+	if right_deadzone is None:
+		right_deadzone = RIGHT_DEADZONE
+
 	lx = float(lx); ly = float(ly)
 	rx = float(rx); ry = float(ry)
 
@@ -1094,6 +1362,80 @@ def joystick_to_cmd(
 		wz = -WZ_MAX * math.copysign(strength, rx)
 
 	return vx, vy, wz
+
+
+# =============================================================================
+# v2: live tuning entry point ("GAIT <key> <value>" from the Steam Deck)
+# =============================================================================
+
+def get_gait_options() -> Dict[str, Any]:
+	"""Snapshot of every live-tunable knob (for HUDs / debugging)."""
+	eng = _ensure_engine()
+	return {
+		"step_hz": eng.step_hz, "swing_frac": eng.swing_frac,
+		"step_height": eng.base_step_height, "speed_scale": eng.speed_scale,
+		"height_offset": eng.height_offset, "imu": eng._imu_enabled,
+		"imu_gain": eng.imu_gain,
+		"real_dt": eng.use_real_dt, "finish_step": eng.finish_step,
+		"slew": eng.slew_enabled, "slew_time": eng.slew_time,
+		"step_clamp": eng.step_clamp, "max_step_len": eng.max_step_len,
+		"soft_td": eng.soft_touchdown,
+		"inactivity_reset": INACTIVITY_RESET_S,
+		"vx_speed": VX_SPEED, "vy_speed": VY_SPEED,
+		"diag_speed": DIAG_SPEED, "wz_max": WZ_MAX,
+		"write_deadband": SERVO_WRITE_DEADBAND, "move_easing": MOVE_EASING,
+		"speed_mode": SPEED_MODE,
+	}
+
+
+def set_gait_option(key: str, value) -> bool:
+	"""Live-set one option by string key. Returns True if the key was known.
+	Values arrive as strings from the wire; booleans accept 1/0/true/false."""
+	global INACTIVITY_RESET_S, VX_SPEED, VY_SPEED, DIAG_SPEED, WZ_MAX
+	global SERVO_WRITE_DEADBAND, MOVE_EASING, SPEED_MODE
+
+	def as_f(v): return float(v)
+	def as_b(v):
+		if isinstance(v, str):
+			return v.strip().lower() in ("1", "true", "on", "yes")
+		return bool(v)
+
+	eng = _ensure_engine()
+	key = key.strip().lower()
+	try:
+		if key == "step_hz":          eng.set_params(step_hz=as_f(value))
+		elif key == "swing_frac":     eng.set_params(swing_frac=as_f(value))
+		elif key == "step_height":    eng.set_params(base_step_height=as_f(value))
+		elif key == "speed_scale":    eng.set_speed_scale(as_f(value))
+		elif key == "height_offset":  eng.set_height_offset(as_f(value))
+		elif key == "imu":            eng.enable_imu(as_b(value))
+		elif key == "imu_gain":       eng.imu_gain = as_f(value)
+		elif key == "gait":           eng.set_gait(str(value).strip().lower())
+		elif key == "real_dt":        eng.use_real_dt = as_b(value)
+		elif key == "finish_step":    eng.finish_step = as_b(value)
+		elif key == "slew":           eng.slew_enabled = as_b(value)
+		elif key == "slew_time":      eng.slew_time = _clamp(as_f(value), 0.02, 2.0)
+		elif key == "step_clamp":     eng.step_clamp = as_b(value)
+		elif key == "max_step_len":   eng.max_step_len = _clamp(as_f(value), 0.03, 0.30)
+		elif key == "soft_td":        eng.soft_touchdown = as_b(value)
+		elif key == "inactivity_reset":
+			INACTIVITY_RESET_S = _clamp(as_f(value), 0.1, 10.0)
+		elif key == "vx_speed":
+			VX_SPEED = _clamp(as_f(value), 0.01, 0.40); eng.set_slew_reference(VX_SPEED, WZ_MAX)
+		elif key == "vy_speed":       VY_SPEED = _clamp(as_f(value), 0.01, 0.40)
+		elif key == "diag_speed":     DIAG_SPEED = _clamp(as_f(value), 0.01, 0.40)
+		elif key == "wz_max":
+			WZ_MAX = _clamp(as_f(value), 0.05, 3.0); eng.set_slew_reference(VX_SPEED, WZ_MAX)
+		elif key == "write_deadband": SERVO_WRITE_DEADBAND = _clamp(as_f(value), 0.0, 3.0)
+		elif key == "move_easing":    MOVE_EASING = as_b(value)
+		elif key == "speed_mode":     SPEED_MODE = as_b(value)
+		else:
+			return False
+	except (ValueError, TypeError) as e:
+		print(f"[MoveLib] set_gait_option({key!r}, {value!r}) rejected: {e}")
+		return False
+	print(f"[MoveLib] gait option {key} = {value}")
+	return True
 
 
 def shutdown():

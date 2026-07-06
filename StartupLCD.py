@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
 """
-lcd_supervisor.py (Raspberry Pi)
+lcd_supervisor.py (Raspberry Pi) — v2
 
-Manages two robot controller scripts:
+Manages the robot controller scripts:
   - Flipper2.py               : runs by default at all times, auto-restarts on crash
-  - SteamDeckCommunication.py : launched when Steam Deck presence detected;
-                                Flipper2 is killed while Steam Deck is present
-                                and restarted when it leaves.
+  - SteamDeckCommunication.py : "drive" mode — camera + joystick control only
+  - Slam/run_robot.py         : "slam" mode — SLAM stack + camera + joystick
+                                control in ONE process (map at :8001)
 
 Steam Deck always takes priority — only one script owns GPIO at a time.
+
+v2 changes:
+  * The Deck's presence hello now carries a mode:
+        "STEAMDECK_READY MODE=drive\n"   -> SteamDeckCommunication.py
+        "STEAMDECK_READY MODE=slam\n"    -> Slam/run_robot.py
+    (a bare "STEAMDECK_READY" still works and means drive — old clients fine.)
+    "Drive + Minimap" and "Map Mode" on the Deck both request slam, since the
+    minimap and the map UI are fed by the SLAM web server on :8001.
+  * If the Deck reconnects asking for a DIFFERENT mode, the running script is
+    swapped without waiting for the Deck to fully disappear.
+  * UDP discovery beacon: broadcasts "CORNDOG <hostname>" on UDP :65430 every
+    2 s while idle or serving, so the Deck can auto-discover the Pi's IP on any
+    shared network (no more typing IPs).
 """
 
 import os
@@ -26,16 +39,20 @@ from lcd import lcd_library as lcd
 
 # -------------------- CONFIG --------------------
 PRESENCE_PORT = 65431
+BEACON_PORT   = 65430
+BEACON_PERIOD = 2.0
 
-STEAMDECK_MODE_CMD = [
-    "/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python",
-    "/home/Corndog/Desktop/RobotOperationScripts/Corndog/SteamDeckCommunication.py",
-]
+_PY = "/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python"
+_BASE = "/home/Corndog/Desktop/RobotOperationScripts/Corndog"
 
-FLIPPER2_CMD = [
-    "/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python",
-    "/home/Corndog/Desktop/RobotOperationScripts/Corndog/Flipper2.py",
-]
+STEAMDECK_MODE_CMD = [_PY, f"{_BASE}/SteamDeckCommunication.py"]
+
+# SLAM entry point (runs SLAM + control listener + camera in one process).
+# run_robot.py expects to be launched from inside the Slam folder.
+SLAM_MODE_CMD = [_PY, f"{_BASE}/Slam/run_robot.py"]
+SLAM_MODE_CWD = f"{_BASE}/Slam"
+
+FLIPPER2_CMD = [_PY, f"{_BASE}/Flipper2.py"]
 
 POLL_S          = 0.5
 LCD_REFRESH_S   = 2.0
@@ -106,12 +123,33 @@ def get_connect_info():
         return False, 0
 
 
-# -------------------- Steam Deck presence listener --------------------
+# -------------------- UDP discovery beacon --------------------
+def run_beacon(stop_event):
+    """Broadcast a small hello so the Deck can find our IP without typing it.
+    The Deck learns the IP from the packet's source address."""
+    host = socket.gethostname()
+    payload = f"CORNDOG {host}".encode()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    while not stop_event.is_set():
+        try:
+            s.sendto(payload, ("255.255.255.255", BEACON_PORT))
+        except Exception:
+            pass
+        stop_event.wait(BEACON_PERIOD)
+    try:
+        s.close()
+    except Exception:
+        pass
+
+
+# -------------------- Steam Deck presence listener (mode-aware) --------------------
 class SteamDeckPresence:
     def __init__(self, port):
         self.port = port
         self._lock = threading.Lock()
         self._connected = False
+        self._mode = "drive"
         self._conn = None
         self._stop = threading.Event()
 
@@ -133,10 +171,27 @@ class SteamDeckPresence:
         with self._lock:
             return self._connected
 
-    def _set_connected(self, v, conn=None):
+    def mode(self):
+        with self._lock:
+            return self._mode
+
+    def _set_connected(self, v, conn=None, mode=None):
         with self._lock:
             self._connected = v
             self._conn = conn
+            if mode is not None:
+                self._mode = mode
+
+    @staticmethod
+    def _parse_mode(data: bytes) -> str:
+        try:
+            text = data.decode("utf-8", errors="ignore")
+        except Exception:
+            return "drive"
+        m = re.search(r"MODE=(\w+)", text)
+        if m and m.group(1).lower() in ("drive", "slam"):
+            return m.group(1).lower()
+        return "drive"
 
     def _run(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -154,7 +209,7 @@ class SteamDeckPresence:
                     continue
                 try:
                     conn.settimeout(0.1)
-                    data = conn.recv(1)
+                    data = conn.recv(64)
                     if not data:
                         self._set_connected(False)
                         try:
@@ -173,12 +228,15 @@ class SteamDeckPresence:
 
             try:
                 conn, addr = s.accept()
+                mode = "drive"
                 try:
-                    conn.settimeout(0.5)
-                    conn.recv(64)
+                    conn.settimeout(0.8)
+                    hello = conn.recv(128)
+                    mode = self._parse_mode(hello)
                 except Exception:
                     pass
-                self._set_connected(True, conn)
+                print(f"[Supervisor] Steam Deck hello (mode={mode}) from {addr}")
+                self._set_connected(True, conn, mode)
             except socket.timeout:
                 pass
             except Exception:
@@ -191,12 +249,13 @@ class SteamDeckPresence:
 
 
 # -------------------- Process helpers --------------------
-def _popen(cmd):
+def _popen(cmd, cwd=None):
     """Launch cmd in its own process group, capturing stdout+stderr."""
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     return subprocess.Popen(
         cmd,
+        cwd=cwd,
         preexec_fn=os.setsid,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -204,7 +263,7 @@ def _popen(cmd):
     )
 
 
-def _kill_proc(p, grace_s=1.0):
+def _kill_proc(p, grace_s=2.0):
     if p is None:
         return
     try:
@@ -225,7 +284,6 @@ def _watch_for_crash(name, proc, restart_fn):
     """
     Waits for a process to exit. If it wasn't killed intentionally,
     waits RESTART_DELAY_S then calls restart_fn() to bring it back.
-    restart_fn receives one argument: was_intentional (bool).
     """
     # Drain stdout so the pipe doesn't fill and block the child.
     try:
@@ -242,68 +300,73 @@ def _watch_for_crash(name, proc, restart_fn):
 # -------------------- Main --------------------
 def main():
     _flipper_proc   = None
-    _steamdeck_proc = None
+    _deck_proc      = None       # whichever deck-facing script is running
+    _deck_mode      = None       # "drive" | "slam" | None
     _steamdeck_present = False
-
-    # Suppress flags: set True before an intentional kill so the watcher
-    # thread doesn't schedule a restart for that death.
-    _flipper_suppress   = [False]   # wrapped in list so closure can mutate
-    _steamdeck_suppress = [False]
 
     def start_flipper():
         nonlocal _flipper_proc
-        _flipper_suppress[0] = False
         p = _popen(FLIPPER2_CMD)
+        p._suppress = False          # per-process flag: no cross-restart races
         _flipper_proc = p
         print("[Supervisor] Flipper2.py started")
 
         def on_exit():
             nonlocal _flipper_proc
-            _flipper_proc = None
-            if _flipper_suppress[0]:
+            if _flipper_proc is p:
+                _flipper_proc = None
+            if p._suppress:
                 print("[Supervisor] Flipper2.py stopped (intentional)")
                 return
             print(f"[Supervisor] Flipper2.py crashed — restarting in {RESTART_DELAY_S}s")
             time.sleep(RESTART_DELAY_S)
-            # Only restart if Steam Deck isn't currently using the Pi
-            if not _steamdeck_present:
+            if not _steamdeck_present and _flipper_proc is None:
                 start_flipper()
 
         threading.Thread(target=_watch_for_crash, args=("flipper", p, on_exit), daemon=True).start()
 
     def kill_flipper():
         nonlocal _flipper_proc
-        _flipper_suppress[0] = True
+        if _flipper_proc is not None:
+            _flipper_proc._suppress = True
         _kill_proc(_flipper_proc)
         _flipper_proc = None
         print("[Supervisor] Flipper2.py killed (Steam Deck priority)")
 
-    def start_steamdeck():
-        nonlocal _steamdeck_proc
-        _steamdeck_suppress[0] = False
-        p = _popen(STEAMDECK_MODE_CMD)
-        _steamdeck_proc = p
-        print("[Supervisor] SteamDeckCommunication.py started")
+    def start_deck_script(mode):
+        nonlocal _deck_proc, _deck_mode
+        if mode == "slam":
+            p = _popen(SLAM_MODE_CMD, cwd=SLAM_MODE_CWD)
+            print("[Supervisor] Slam/run_robot.py started (slam mode)")
+        else:
+            p = _popen(STEAMDECK_MODE_CMD)
+            print("[Supervisor] SteamDeckCommunication.py started (drive mode)")
+        p._suppress = False
+        _deck_proc = p
+        _deck_mode = mode
 
         def on_exit():
-            nonlocal _steamdeck_proc
-            _steamdeck_proc = None
-            if _steamdeck_suppress[0]:
-                print("[Supervisor] SteamDeckCommunication.py stopped (intentional)")
+            nonlocal _deck_proc
+            if _deck_proc is p:
+                _deck_proc = None
+            if p._suppress:
+                print("[Supervisor] deck script stopped (intentional)")
                 return
-            print(f"[Supervisor] SteamDeckCommunication.py crashed — restarting in {RESTART_DELAY_S}s")
+            print(f"[Supervisor] deck script crashed — restarting in {RESTART_DELAY_S}s")
             time.sleep(RESTART_DELAY_S)
-            if _steamdeck_present:
-                start_steamdeck()
+            if _steamdeck_present and _deck_proc is None:
+                start_deck_script(mode)
 
-        threading.Thread(target=_watch_for_crash, args=("steamdeck", p, on_exit), daemon=True).start()
+        threading.Thread(target=_watch_for_crash, args=(f"deck:{mode}", p, on_exit), daemon=True).start()
 
-    def kill_steamdeck():
-        nonlocal _steamdeck_proc
-        _steamdeck_suppress[0] = True
-        _kill_proc(_steamdeck_proc)
-        _steamdeck_proc = None
-        print("[Supervisor] SteamDeckCommunication.py killed")
+    def kill_deck_script():
+        nonlocal _deck_proc, _deck_mode
+        if _deck_proc is not None:
+            _deck_proc._suppress = True
+        _kill_proc(_deck_proc, grace_s=3.0 if _deck_mode == "slam" else 1.5)
+        _deck_proc = None
+        _deck_mode = None
+        print("[Supervisor] deck script killed")
 
     try:
         lcd.lcd(get_wifi_status())
@@ -312,6 +375,9 @@ def main():
 
     last_lcd_t   = 0.0
     last_lcd_msg = None
+
+    beacon_stop = threading.Event()
+    threading.Thread(target=run_beacon, args=(beacon_stop,), daemon=True).start()
 
     presence = SteamDeckPresence(PRESENCE_PORT)
     presence.start()
@@ -322,23 +388,36 @@ def main():
     try:
         while True:
             deck_now = presence.is_connected()
+            want_mode = presence.mode()
 
             # ── Steam Deck just appeared ──────────────────────────
             if deck_now and not _steamdeck_present:
                 _steamdeck_present = True
-                print("[Supervisor] Steam Deck detected — killing Flipper2, launching SteamDeck")
+                print(f"[Supervisor] Steam Deck detected (mode={want_mode}) — "
+                      f"killing Flipper2, launching deck script")
                 kill_flipper()
-                start_steamdeck()
+                start_deck_script(want_mode)
                 try:
-                    lcd.lcd("Steam Deck      Active")
+                    lcd.lcd("Steam Deck      " + ("SLAM" if want_mode == "slam" else "Active"))
+                except Exception:
+                    pass
+
+            # ── Deck present but asked for a different mode ───────
+            elif deck_now and _steamdeck_present and _deck_mode is not None \
+                    and want_mode != _deck_mode:
+                print(f"[Supervisor] Steam Deck mode switch {_deck_mode} -> {want_mode}")
+                kill_deck_script()
+                start_deck_script(want_mode)
+                try:
+                    lcd.lcd("Steam Deck      " + ("SLAM" if want_mode == "slam" else "Active"))
                 except Exception:
                     pass
 
             # ── Steam Deck just disappeared ───────────────────────
             elif not deck_now and _steamdeck_present:
                 _steamdeck_present = False
-                print("[Supervisor] Steam Deck gone — killing SteamDeck, restoring Flipper2")
-                kill_steamdeck()
+                print("[Supervisor] Steam Deck gone — killing deck script, restoring Flipper2")
+                kill_deck_script()
                 start_flipper()
                 try:
                     lcd.lcd("Flipper Mode")
@@ -366,8 +445,9 @@ def main():
 
     finally:
         kill_flipper()
-        kill_steamdeck()
+        kill_deck_script()
         presence.stop()
+        beacon_stop.set()
         try:
             lcd.clear()
         except Exception:
