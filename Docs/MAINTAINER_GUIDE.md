@@ -4,7 +4,7 @@ How this setup thinks about YOUR workflow:
 
 - **Your dog is the dev machine.** You remote in (Pi Connect), edit with
   Geany or the terminal, and run things right there. Your working copy in
-  `~/Corndog` is the source of truth — you never *pull* updates, you only
+  `~/Desktop/RobotOperationScripts/Corndog` is the source of truth — you never *pull* updates, you only
   *push* them.
 - Your dog lives on the `experimental` branch. Users live on `main`.
 - `corndog update` is a **users-only** command. You are upstream; there is
@@ -18,11 +18,9 @@ How this setup thinks about YOUR workflow:
 ## 1. DO THIS RIGHT NOW (one-time setup, on the dog)
 
 ```bash
-cd ~/Corndog
+cd ~/Desktop/RobotOperationScripts/Corndog
 
-# 1. sanity check — should show installer/, tools/, lcd_custom/, Docs/,
-#    requirements.txt, and edits to main.py, MoveLib.py, StartupLCD.py,
-#    .gitignore
+# 1. sanity check
 git status
 
 # 2. commit and push everything to main
@@ -34,18 +32,16 @@ git push origin main
 git checkout -b experimental
 git push -u origin experimental
 
-# 4. run the installer over your existing folder (safe — it detects the
-#    repo and adds the venv, service, and corndog command around it)
-bash ~/Corndog/installer/install.sh
+# 4. run the installer FROM INSIDE the repo — it detects it's being run
+#    from a cloned repo and installs THAT copy in place (no second clone),
+#    keeping whatever branch you're on
+bash installer/install.sh
 
-# 5. tell the launcher your dog tracks experimental (so `corndog status`
-#    reports the right thing — you still never run `corndog update`)
-sed -i 's/^CORNDOG_BRANCH=.*/CORNDOG_BRANCH=experimental/' ~/.config/corndog/install.env
-
-# 6. reboot once (hardware group changes + supervisor service start)
+# 5. reboot once (hardware group changes + supervisor service start)
 sudo reboot
 
-# 7. after remoting back in, check everything
+# 6. after remoting back in, check everything — branch should say
+#    experimental
 corndog status
 ```
 
@@ -56,7 +52,7 @@ Notes:
   .desktop file) must go, or two copies will fight over the GPIO.
   (`crontab -e`, check `/etc/rc.local`, check `~/.config/autostart/`.)
 - Your old venv (`robo`) is untouched. The install made its own at
-  `~/Corndog/venv`. Delete `robo` whenever you're confident.
+  `<repo>/venv`. Delete `robo` whenever you're confident.
 - **If `git push` asks for a password:** GitHub needs a token or SSH key on
   the dog (one time). Easiest is the GitHub CLI:
   ```bash
@@ -102,7 +98,7 @@ Two special cases:
 - **You edited `installer/corndog` itself** (the launcher): the copy in
   `~/.local/bin` doesn't update by itself for you. Refresh it:
   ```bash
-  cp ~/Corndog/installer/corndog ~/.local/bin/corndog
+  cp installer/corndog ~/.local/bin/corndog   # from the repo folder
   ```
 - **You edited `installer/install.sh`:** nothing to do — users always fetch
   it fresh from GitHub via the curl line.
@@ -114,7 +110,7 @@ Two special cases:
 When a feature is solid, still on the dog:
 
 ```bash
-cd ~/Corndog
+cd ~/Desktop/RobotOperationScripts/Corndog
 git checkout main
 git merge experimental           # bring in your tested work
 git push origin main

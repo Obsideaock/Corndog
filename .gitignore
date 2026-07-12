@@ -12,3 +12,4 @@ lcd/
 # user playground — never touched by updates
 sandbox/*
 !sandbox/README.md
+third_party/

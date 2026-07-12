@@ -25,6 +25,15 @@ set -euo pipefail
 REPO_URL="${CORNDOG_REPO:-https://github.com/Obsideaock/Corndog.git}"
 BRANCH="${CORNDOG_BRANCH:-main}"
 INSTALL_DIR="${CORNDOG_DIR:-$HOME/Corndog}"
+# If this script is being run FROM a cloned repo (bash installer/install.sh),
+# install THAT repo in place instead of cloning a second copy to ~/Corndog.
+# (When piped via curl, BASH_SOURCE is empty and this is skipped.)
+if [ -z "${CORNDOG_DIR:-}" ] && [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    _SELF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if [ -d "$_SELF_ROOT/.git" ] && [ -f "$_SELF_ROOT/installer/install.sh" ]; then
+        INSTALL_DIR="$_SELF_ROOT"
+    fi
+fi
 CONFIG_DIR="$HOME/.config/corndog"
 BIN_DIR="$HOME/.local/bin"
 # lcd library ships inside the repo (lcd_custom/)
@@ -89,22 +98,26 @@ for grp in i2c gpio video dialout; do
 done
 ok "user '$USER' added to hardware groups (takes effect next login)"
 
-step "Fetching Corndog -> $INSTALL_DIR (branch: $BRANCH)"
+step "Fetching Corndog -> $INSTALL_DIR"
 if [ -d "$INSTALL_DIR/.git" ]; then
-    git -C "$INSTALL_DIR" fetch --quiet origin
-    git -C "$INSTALL_DIR" checkout --quiet "$BRANCH"
-    git -C "$INSTALL_DIR" pull --quiet --ff-only origin "$BRANCH" || \
-        warn "local changes present — skipped pull (use 'corndog update --force' to reset)"
-    ok "existing install updated"
+    # Existing repo: respect whatever branch it's on (dev machines live on
+    # experimental) — never force-switch it.
+    BRANCH="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$BRANCH")"
+    git -C "$INSTALL_DIR" fetch --quiet origin || warn "fetch failed (offline?)"
+    git -C "$INSTALL_DIR" pull --quiet --ff-only origin "$BRANCH" 2>/dev/null || \
+        warn "local changes or unpushed work present — skipped pull (this is fine on a dev machine)"
+    ok "existing install refreshed (branch: $BRANCH)"
 else
     git clone --quiet --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
-    ok "repo cloned"
+    ok "repo cloned (branch: $BRANCH)"
 fi
 
 step "Python virtual environment"
 VENV="$INSTALL_DIR/venv"
 [ -d "$VENV" ] || python3 -m venv --system-site-packages "$VENV"
 # --system-site-packages: picamera2/libcamera only exist as apt packages
+echo "    (pip may print dependency warnings about unrelated system"
+echo "     packages like mkdocs — those are harmless)"
 "$VENV/bin/pip" install --quiet --upgrade pip wheel
 if [ -f "$INSTALL_DIR/requirements.txt" ]; then
     "$VENV/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
@@ -113,10 +126,26 @@ else
         adafruit-circuitpython-pca9685 adafruit-circuitpython-servokit \
         adafruit-circuitpython-bno08x gpiozero numpy opencv-python lgpio
 fi
-"$VENV/bin/pip" install --quiet \
-    "git+https://github.com/mike4192/spot_micro_kinematics_python.git" \
-    || warn "spot_micro_kinematics install failed — IK scripts won't run until fixed"
 ok "python deps installed"
+
+step "spot_micro_kinematics (IK library)"
+# This library is not pip-installable (its setup.py expects a folder layout
+# the repo doesn't have) — the intended use is dropping it next to your
+# code. So: clone it as third_party/spot_micro_kinematics and point the
+# venv at third_party/ with a .pth file.
+SMK_DIR="$INSTALL_DIR/third_party/spot_micro_kinematics"
+if [ ! -d "$SMK_DIR/.git" ]; then
+    mkdir -p "$INSTALL_DIR/third_party"
+    git clone --quiet https://github.com/mike4192/spot_micro_kinematics_python.git "$SMK_DIR" \
+        || warn "clone failed — IK scripts won't run until fixed"
+fi
+SITE_DIR="$("$VENV/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
+echo "$INSTALL_DIR/third_party" > "$SITE_DIR/corndog_third_party.pth"
+if "$VENV/bin/python" -c "import spot_micro_kinematics" 2>/dev/null; then
+    ok "spot_micro_kinematics importable"
+else
+    warn "spot_micro_kinematics import failed — IK scripts won't run until fixed"
+fi
 
 step "LCD driver library"
 # lcd_custom/ in the repo is the complete working library (upstream

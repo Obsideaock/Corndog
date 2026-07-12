@@ -29,7 +29,12 @@ sudo reboot
 ```
 
 That's it. The installer is safe to re-run any time — re-running repairs a
-broken install.
+broken install. It installs to `~/Corndog` by default; to put it somewhere
+else, add `CORNDOG_DIR`:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Obsideaock/Corndog/main/installer/install.sh | CORNDOG_DIR=/path/you/want bash
+```
 
 ## Building & calibrating (the two assembly tools)
 

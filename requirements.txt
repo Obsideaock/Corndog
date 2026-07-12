@@ -1,0 +1,12 @@
+# Corndog python dependencies (installed into the venv by install.sh)
+# picamera2/libcamera come from apt (venv uses --system-site-packages)
+adafruit-circuitpython-pca9685
+adafruit-circuitpython-servokit
+adafruit-circuitpython-bno08x
+adafruit-blinka
+gpiozero
+lgpio
+numpy
+opencv-python
+# spot_micro_kinematics is NOT pip-installable; install.sh clones it to
+#   third_party/spot_micro_kinematics and adds a .pth to the venv

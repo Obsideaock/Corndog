@@ -94,20 +94,25 @@ Modifications and custom parts (like the shoulder harness for companion mode) ar
 
 ---
 
-## Software Dependencies
+## Installation
 
-All code targets **Python 3.8+** on Raspbian 64-bit.
+Everything installs itself. On a fresh Raspberry Pi (Raspberry Pi OS
+Bookworm 64-bit with desktop), open a terminal on the Pi and run:
 
 ```bash
-sudo apt update && sudo apt install -y python3-pip python3-venv python3-tk \
-  libopencv-dev network-manager
-
-pip3 install adafruit-circuitpython-pca9685 adafruit-circuitpython-servokit \
-  gpiozero numpy opencv-python picamera2
+curl -sSL https://raw.githubusercontent.com/Obsideaock/Corndog/main/installer/install.sh | bash
+sudo reboot
 ```
 
-Also required (manual install):
-- **[spot-micro-kinematics](https://github.com/mike4192/spot_micro_kinematics_python/tree/master)** — IK and stick-figure utilities
+That single line handles the apt packages, I2C, the Python environment,
+the IK library, the `corndog` command, and the boot supervisor. To install
+somewhere other than `~/Corndog`:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Obsideaock/Corndog/main/installer/install.sh | CORNDOG_DIR=/path/you/want bash
+```
+
+Full details in [Docs/USER_GUIDE.md](Docs/USER_GUIDE.md).
 
 ---
 
@@ -117,55 +122,34 @@ Also required (manual install):
 |---|---|
 | `main.py` | Core control: IK, all movements, Tkinter GUI |
 | `SteamDeckCommunication.py` | Joystick control over TCP + MJPEG video stream |
-| `SingularMotortest.py` | Manual servo calibration tool |
 | `MoveLib.py` | Movement library (aliased by SteamDeck script) |
 | `gait_engine_app.py` | Gait engine module |
-| `StartupLCD.py` | LCD startup display |
-| `BTtest.py` | Bluetooth testing |
-| `flipper_menu.py` / `FlipperTed.py` | Flipper Zero integration |
+| `StartupLCD.py` | Boot supervisor + LCD display |
+| `tools/align.py` | Assembly Part A: hold servos at the horn pose |
+| `tools/calibrate.py` | Assembly Part B: trim joints + save calibration |
+| `Flipper2.py` / `FlipperTed.py` | Flipper Zero integration |
 
 ---
 
 ## Setup & Calibration
 
-> Full calibration guide coming soon. Here's the short version:
+Calibration is built in — no more editing angles by hand. During assembly:
 
-**1. Clone and install**
 ```bash
-git clone https://github.com/Obsideaock/Corndog.git
-cd Corndog
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+corndog align       # Part A: before horns go on — holds every servo at
+                    # the reference pose so you attach horns correctly
+corndog calibrate   # Part B: after assembly, robot ON ITS BACK — nudge
+                    # each joint to perfect, press s to save
 ```
 
-**2. Servo calibration**
+The calibration lives in `~/.config/corndog/calibration.json` and survives
+every software update. Details in
+[Docs/USER_GUIDE.md](Docs/USER_GUIDE.md).
 
-Run `SingularMotortest.py` to manually find the 0°–270° endpoints for each servo.
-
-Place the robot upside down and adjust each joint to find the standing position (all joints equidistant from ground). Plug those angles into `servo_home` in `main.py`.
-
-Check the channel-to-joint mapping in `MAPPING` and `CHANNEL_MAP`.
-
-Enable `safety=True` to print planned deltas without moving anything:
-```
-# Example output:
-Leg 3 planned deltas: {7: 10.35, 5: -6.30, 1: -30.17}
-
-# Take the inverse of each delta and add it to your offsets:
-Before: 3: {1:{'sign':+1,'offset':45}, 2:{'sign':-1,'offset':83}, 3:{'sign':-1,'offset':131}}
-After:  3: {1:{'sign':+1,'offset':35}, 2:{'sign':-1,'offset':89}, 3:{'sign':-1,'offset':161}}
-```
-
-Repeat until the robot stands level.
-
-**3. Run**
+**Run**
 ```bash
-# GUI control (on-device)
-python3 main.py
-
-# Steam Deck / remote control + video stream
-python3 SteamDeckCommunication.py
+corndog gui                 # GUI control (on-device)
+corndog deck                # Steam Deck / remote control + video stream
 # Stream available at http://<pi-ip>:8000/stream.mjpg
 # Control on TCP port 65432
 ```
