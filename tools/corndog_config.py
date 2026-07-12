@@ -52,12 +52,12 @@ SERVO_CHANNELS = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
 FACTORY_SERVO_HOME = {
     0: 39.0,  1: 231.0,  4: 222.0,  5: 50.0,
     6: 128.0, 7: 130.0,  8: 133.0,  9: 135.0,
-    10: 78.0, 11: 204.0, 14: 235.0, 15: 33.0,
+    10: 80.0, 11: 204.0, 14: 235.0, 15: 33.0,
 }
 
 # Right legs only (1 = right front, 3 = right back). Left legs mirror deltas.
 FACTORY_MAPPING_RIGHT = {
-    1: {1: {"sign": -1, "offset": 228}, 2: {"sign": -1, "offset": 117}, 3: {"sign": -1, "offset": 165}},
+    1: {1: {"sign": -1, "offset": 228}, 2: {"sign": -1, "offset": 119}, 3: {"sign": -1, "offset": 165}},
     3: {1: {"sign": +1, "offset": 35},  2: {"sign": -1, "offset": 89},  3: {"sign": -1, "offset": 161}},
 }
 

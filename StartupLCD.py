@@ -81,6 +81,21 @@ FLIPPER2_CMD = [_PY, f"{_BASE}/Flipper2.py"]
 POLL_S          = 0.5
 LCD_REFRESH_S   = 2.0
 RESTART_DELAY_S = 3.0
+RESTART_DELAY_MAX_S = 60.0
+_backoff = {"flipper": RESTART_DELAY_S, "deck": RESTART_DELAY_S}
+_last_start = {"flipper": 0.0, "deck": 0.0}
+
+
+def _crash_delay(name: str) -> float:
+    """Escalating restart delay: 3s doubling to 60s while a script keeps
+    crashing instantly (e.g. missing module); resets once it survives 30s.
+    Keeps the journal readable instead of spamming every 3 seconds."""
+    now = time.time()
+    if now - _last_start.get(name, 0.0) > 30.0:
+        _backoff[name] = RESTART_DELAY_S
+    d = _backoff[name]
+    _backoff[name] = min(RESTART_DELAY_MAX_S, d * 2)
+    return d
 
 
 # -------------------- WiFi + Connect status --------------------
@@ -333,6 +348,7 @@ def main():
         p = _popen(FLIPPER2_CMD)
         p._suppress = False          # per-process flag: no cross-restart races
         _flipper_proc = p
+        _last_start["flipper"] = time.time()
         print("[Supervisor] Flipper2.py started")
 
         def on_exit():
@@ -342,8 +358,9 @@ def main():
             if p._suppress:
                 print("[Supervisor] Flipper2.py stopped (intentional)")
                 return
-            print(f"[Supervisor] Flipper2.py crashed — restarting in {RESTART_DELAY_S}s")
-            time.sleep(RESTART_DELAY_S)
+            d = _crash_delay("flipper")
+            print(f"[Supervisor] Flipper2.py crashed — restarting in {d:.0f}s")
+            time.sleep(d)
             if not _steamdeck_present and _flipper_proc is None:
                 start_flipper()
 
@@ -368,6 +385,7 @@ def main():
         p._suppress = False
         _deck_proc = p
         _deck_mode = mode
+        _last_start["deck"] = time.time()
 
         def on_exit():
             nonlocal _deck_proc
@@ -376,8 +394,9 @@ def main():
             if p._suppress:
                 print("[Supervisor] deck script stopped (intentional)")
                 return
-            print(f"[Supervisor] deck script crashed — restarting in {RESTART_DELAY_S}s")
-            time.sleep(RESTART_DELAY_S)
+            d = _crash_delay("deck")
+            print(f"[Supervisor] deck script crashed — restarting in {d:.0f}s")
+            time.sleep(d)
             if _steamdeck_present and _deck_proc is None:
                 start_deck_script(mode)
 

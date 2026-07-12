@@ -1,12 +1,31 @@
 # Corndog python dependencies (installed into the venv by install.sh)
 # picamera2/libcamera come from apt (venv uses --system-site-packages)
+
+# servos / IMU / GPIO
 adafruit-circuitpython-pca9685
 adafruit-circuitpython-servokit
 adafruit-circuitpython-bno08x
 adafruit-blinka
 gpiozero
 lgpio
-numpy
+
+# vision / math
+# numpy MUST stay <2: the apt-built picamera2/simplejpeg are compiled against
+# numpy 1.x, and numpy 2 breaks their ABI (camera import crashes).
+numpy<2
 opencv-python
+pillow
+
+# Flipper Zero control (Flipper2.py + friends)
+bleak
+evdev
+
+# SLAM stack (LiDAR + map rendering)
+pyrplidar
+
+# tests/ extras (lidartest, slamtest)
+scipy
+matplotlib
+
 # spot_micro_kinematics is NOT pip-installable; install.sh clones it to
 #   third_party/spot_micro_kinematics and adds a .pth to the venv

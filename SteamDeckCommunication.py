@@ -7,7 +7,24 @@ import os
 import errno
 
 import cv2
-from picamera2 import Picamera2
+
+# Camera import guard (same defense as Slam/slam_app.py): picamera2 can fail
+# to import when the venv's numpy doesn't match the ABI the apt-built
+# picamera2/simplejpeg were compiled against (numpy must stay <2). If that
+# happens, stub the camera and KEEP CONTROL ALIVE — the Deck just won't get
+# video, and the log says exactly how to fix it.
+CAMERA_OK = True
+try:
+    from picamera2 import Picamera2
+except Exception as _cam_e:
+    CAMERA_OK = False
+    print(f"[Video] camera disabled ({type(_cam_e).__name__}: {_cam_e})")
+    print("[Video] control still works — no video stream. To restore the "
+          "camera: venv/bin/pip install 'numpy<2'")
+
+    class Picamera2:  # minimal stub so later code constructs harmlessly
+        def __init__(self, *a, **k):
+            raise RuntimeError("camera unavailable (picamera2 import failed)")
 
 import MoveLib as mlib
 import corndog_pi_emotes as emotes
@@ -385,6 +402,13 @@ def run_control_listener():
                 _handle_client(conn, addr)
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 print(f"[Control] client error: {e}")
+            except Exception as e:
+                # A malformed command must NEVER take down the whole process
+                # (that kills video too and crash-loops the supervisor).
+                import traceback
+                print(f"[Control] handler error ({type(e).__name__}: {e}) — "
+                      f"dropping client, staying alive")
+                traceback.print_exc()
             finally:
                 # client gone: halt cleanly, keep listening for a reconnect
                 try:
@@ -406,5 +430,8 @@ def run_control_listener():
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_mjpeg_server, daemon=True).start()
+    if CAMERA_OK:
+        threading.Thread(target=run_mjpeg_server, daemon=True).start()
+    else:
+        print("[Video] MJPEG server skipped (camera unavailable)")
     run_control_listener()
