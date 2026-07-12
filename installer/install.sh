@@ -225,14 +225,18 @@ echo
 echo "${GRN}=============================================${RST}"
 echo "${GRN} Corndog is installed.${RST}"
 echo
-echo "  Next steps:"
-echo "    1. reboot once:            ${CYN}sudo reboot${RST}"
+echo "  What's next:"
+echo "    1. reboot once:              ${CYN}sudo reboot${RST}"
 echo "       (applies I2C + group changes, starts the supervisor)"
-echo "    2. calibrate the servos:   ${CYN}corndog calibrate${RST}"
-echo "    3. everything else:        ${CYN}corndog help${RST}"
+echo "    2. Align the motors before assembly:  ${CYN}corndog align${RST}"
+echo "       (holds every servo at the right angle for the horns)"
+echo "    3. build your Corndog:       ${CYN}openlonehollow.com/Projects/corndog/assembly-guide${RST}"
+echo "    4. once he's assembled:      ${CYN}corndog calibrate${RST}"
+echo "       (lay him on his back first!)"
+echo "    5. he's ready — try:         ${CYN}corndog gui${RST}   or   ${CYN}corndog help${RST}"
 echo
 if [ ! -f "$CONFIG_DIR/calibration.json" ]; then
-    echo "  ${YLW}No calibration found yet — the robot won't stand right until"
-    echo "  you run 'corndog calibrate'.${RST}"
+    echo "  ${YLW}No calibration found yet — he won't stand right until"
+    echo "  you finish step 4.${RST}"
 fi
 echo "${GRN}=============================================${RST}"

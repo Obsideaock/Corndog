@@ -388,6 +388,11 @@ class GaitApp:
 		# Start/Stop
 		self.btn = tk.Button(panel, text="Start Gait", command=self._toggle)
 		self.btn.grid(row=0, column=0, sticky="we", padx=4, pady=4)
+		try:
+			from corndog_theme import accent_button
+			accent_button(self.btn)
+		except Exception:
+			pass
 
 		# Gait selector (includes diagonal)
 		self.gait_var = tk.StringVar(value="diagonal")
@@ -436,6 +441,12 @@ class GaitApp:
 		# Status row
 		self.status = tk.Label(self.window, text="Ready", anchor="w")
 		self.status.pack(fill="x", padx=8, pady=(0, 8))
+		try:
+			from corndog_theme import green_button, status_label
+			green_button(btn_home)
+			status_label(self.status)
+		except Exception:
+			pass
 
 	def _mk_scale(self, parent, label, a, b, init, col, cb, res, row: int):
 		fr = tk.Frame(parent)
@@ -550,6 +561,11 @@ def main():
 
 	# Build the app window
 	window = tk.Tk()
+	# Corndog dark theme (visual only)
+	from pathlib import Path
+	sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+	from corndog_theme import apply_theme
+	apply_theme(window)
 	_ = GaitApp(window, iklegs_move, get_gravity, BODY_LEN, BODY_WID, lcd=lcd)
 	window.mainloop()
 

@@ -12,4 +12,5 @@ lcd/
 # user playground — never touched by updates
 sandbox/*
 !sandbox/README.md
+!sandbox/example.py
 third_party/

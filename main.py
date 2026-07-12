@@ -498,6 +498,10 @@ def create_gui():
 	window = tk.Tk()
 	window.title("Robot Control")
 
+	# Corndog dark theme (visual only — set before widgets are created)
+	from corndog_theme import apply_theme
+	apply_theme(window)
+
 	# Fullscreen (Esc toggles out)
 	window.attributes("-fullscreen", True)
 	window.bind("<Escape>", lambda e: window.attributes("-fullscreen", False))
