@@ -4,3 +4,11 @@ __pycache__/
 robo/
 .goutputstream-*
 .git_corrupt
+venv/
+lcd/
+.config/
+*.pyc
+
+# user playground — never touched by updates
+sandbox/*
+!sandbox/README.md

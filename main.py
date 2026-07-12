@@ -29,8 +29,12 @@ from spot_micro_kinematics.utilities.spot_micro_kinematics import (
 	t_rightback, t_rightfront, t_leftfront, t_leftback, ikine
 )
 
-sys.path.insert(0, '/home/Corndog/')
+from pathlib import Path as _Path
+_REPO_ROOT = _Path(__file__).resolve().parent
+sys.path.insert(0, str(_REPO_ROOT))            # for `lcd` / `drivers`
+sys.path.insert(0, str(_REPO_ROOT / "tools"))  # for corndog_config
 from lcd import lcd_library as lcd
+from corndog_config import load_calibration as _load_calibration
 
 # Initialize I2C bus and PCA9685 module
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -42,7 +46,10 @@ output_enable = OutputDevice(OE_PIN, active_high=False)
 
 # Define the servo channels and positions
 servo_channels = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
-servo_home = {0: 39, 1: 231, 4: 222, 5: 50, 6: 128, 7: 130, 8: 133, 9: 135, 10: 78, 11: 204, 14: 235, 15: 33}
+# servo_home + IK mapping come from ~/.config/corndog/calibration.json
+# (factory values if the robot hasn't been calibrated yet)
+_CAL = _load_calibration()
+servo_home = dict(_CAL["servo_home"])
 TURN_SCALE = 0.2
 LEFT_CHANNELS  = {15, 11,  0,  4}  # FL ankle, FL thigh, BL ankle, BL thigh
 RIGHT_CHANNELS = {14, 10,  1,  5}  # FR ankle, FR thigh, BR ankle, BR thigh
@@ -302,10 +309,8 @@ CHANNEL_MAP = {
 	3:{1:7,  2:5,  3:1 },
 }
 
-_MAPPING_RIGHT = {
-	1: {1:{'sign':-1,'offset':228}, 2:{'sign':-1,'offset':117}, 3:{'sign':-1,'offset':165}},
-	3: {1:{'sign':+1,'offset':35},  2:{'sign':-1,'offset':89},  3:{'sign':-1,'offset':161}},
-}
+# Loaded from the calibration file (kept in sync with MoveLib automatically)
+_MAPPING_RIGHT = _CAL["mapping_right"]
 
 _MIRROR_PAIR = {0: 1, 2: 3}
 _MIRROR_SIGN = {1: -1, 2: -1, 3: -1}

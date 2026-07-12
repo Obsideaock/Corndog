@@ -33,8 +33,28 @@ import subprocess
 import signal
 
 import sys
-sys.path.insert(0, "/home/Corndog")
+import os
+from pathlib import Path
+
+# ---- path independence: this file's folder IS the repo root ----
+_REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(_REPO_ROOT))
 from lcd import lcd_library as lcd
+
+
+def _read_install_env() -> dict:
+    """Best-effort read of ~/.config/corndog/install.env (written by the
+    installer). Environment variables win; falls back to sane defaults."""
+    env = {}
+    p = Path.home() / ".config" / "corndog" / "install.env"
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.strip().startswith("#"):
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return env
 
 
 # -------------------- CONFIG --------------------
@@ -42,8 +62,12 @@ PRESENCE_PORT = 65431
 BEACON_PORT   = 65430
 BEACON_PERIOD = 2.0
 
-_PY = "/home/Corndog/Desktop/RobotOperationScripts/robo/bin/python"
-_BASE = "/home/Corndog/Desktop/RobotOperationScripts/Corndog"
+_ENV = _read_install_env()
+_BASE = os.environ.get("CORNDOG_DIR") or _ENV.get("CORNDOG_DIR") or str(_REPO_ROOT)
+_VENV = os.environ.get("CORNDOG_VENV") or _ENV.get("CORNDOG_VENV") or f"{_BASE}/venv"
+_PY = f"{_VENV}/bin/python"
+if not Path(_PY).exists():
+    _PY = sys.executable  # running outside a venv (dev setup)
 
 STEAMDECK_MODE_CMD = [_PY, f"{_BASE}/SteamDeckCommunication.py"]
 

@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  corndog — the one command for everything.
+#
+#  The supervisor (StartupLCD) runs at boot and owns the GPIO/servo stack, so
+#  every on-demand launch automatically STOPS it first and RESTARTS it after.
+#  No more hunting for the process and killing it by hand.
+# =============================================================================
+set -euo pipefail
+
+ENV_FILE="$HOME/.config/corndog/install.env"
+[ -f "$ENV_FILE" ] && source "$ENV_FILE"
+CORNDOG_DIR="${CORNDOG_DIR:-$HOME/Corndog}"
+CORNDOG_VENV="${CORNDOG_VENV:-$CORNDOG_DIR/venv}"
+CORNDOG_BRANCH="${CORNDOG_BRANCH:-main}"
+PY="$CORNDOG_VENV/bin/python"
+SERVICE="corndog-supervisor"
+
+RED=$'\e[31m'; GRN=$'\e[32m'; YLW=$'\e[33m'; CYN=$'\e[36m'; RST=$'\e[0m'
+
+usage() {
+cat <<EOF
+${CYN}corndog${RST} — control everything from one place
+
+  ${GRN}corndog align${RST}         assembly Part A: hold servos at the horn pose
+  ${GRN}corndog calibrate${RST}     assembly Part B: trim each joint + save (run after building!)
+  ${GRN}corndog gui${RST}           on-device Tkinter control panel (main.py)
+  ${GRN}corndog deck${RST}          Steam Deck control + camera stream
+  ${GRN}corndog gait${RST}          gait engine tuning app
+  ${GRN}corndog run <file.py>${RST}  run any repo script inside the venv
+                        (supervisor paused around it)
+
+  ${GRN}corndog supervisor${RST} {status|stop|start|restart|logs}
+  ${GRN}corndog status${RST}        install / calibration / service overview
+  ${GRN}corndog update${RST}        pull the latest release   (--force resets local edits)
+                        (--branch <name> switches branch, e.g. experimental)
+  ${GRN}corndog uninstall${RST}     remove service + command (keeps repo & calibration)
+EOF
+}
+
+pause_supervisor() {
+    if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+        echo "${YLW}pausing supervisor (it owns the servos)...${RST}"
+        sudo systemctl stop "$SERVICE"
+        SUPERVISOR_WAS_RUNNING=1
+    else
+        SUPERVISOR_WAS_RUNNING=0
+    fi
+}
+
+resume_supervisor() {
+    if [ "${SUPERVISOR_WAS_RUNNING:-0}" = "1" ]; then
+        echo "${YLW}resuming supervisor...${RST}"
+        sudo systemctl start "$SERVICE" || true
+    fi
+}
+
+run_paused() {   # run a command with the supervisor paused around it
+    pause_supervisor
+    trap resume_supervisor EXIT
+    "$@"
+    trap - EXIT
+    resume_supervisor
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+    align)
+        run_paused "$PY" "$CORNDOG_DIR/tools/align.py" "$@" ;;
+    calibrate)
+        run_paused "$PY" "$CORNDOG_DIR/tools/calibrate.py" "$@" ;;
+    gui)
+        run_paused "$PY" "$CORNDOG_DIR/main.py" "$@" ;;
+    deck)
+        run_paused "$PY" "$CORNDOG_DIR/SteamDeckCommunication.py" "$@" ;;
+    gait)
+        run_paused "$PY" "$CORNDOG_DIR/gait_engine_app.py" "$@" ;;
+    run)
+        [ $# -ge 1 ] || { echo "usage: corndog run <script.py> [args]"; exit 1; }
+        script="$1"; shift
+        [ -f "$script" ] || script="$CORNDOG_DIR/$script"
+        run_paused "$PY" "$script" "$@" ;;
+    supervisor)
+        sub="${1:-status}"
+        case "$sub" in
+            status)  systemctl status "$SERVICE" --no-pager ;;
+            stop)    sudo systemctl stop "$SERVICE" ;;
+            start)   sudo systemctl start "$SERVICE" ;;
+            restart) sudo systemctl restart "$SERVICE" ;;
+            logs)    journalctl -u "$SERVICE" -f ;;
+            *) echo "usage: corndog supervisor {status|stop|start|restart|logs}"; exit 1 ;;
+        esac ;;
+    status)
+        echo "install dir : $CORNDOG_DIR"
+        echo "branch      : $(git -C "$CORNDOG_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+        echo "commit      : $(git -C "$CORNDOG_DIR" log -1 --format='%h %s' 2>/dev/null || echo '?')"
+        echo "venv        : $CORNDOG_VENV"
+        if [ -f "$HOME/.config/corndog/calibration.json" ]; then
+            echo "calibration : ${GRN}present${RST} ($HOME/.config/corndog/calibration.json)"
+        else
+            echo "calibration : ${RED}MISSING${RST} — run 'corndog calibrate'"
+        fi
+        if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+            echo "supervisor  : ${GRN}running${RST}"
+        else
+            echo "supervisor  : ${YLW}stopped${RST}"
+        fi ;;
+    update)
+        force=0; branch="$CORNDOG_BRANCH"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --force) force=1 ;;
+                --branch) branch="$2"; shift ;;
+                *) echo "unknown flag: $1"; exit 1 ;;
+            esac; shift
+        done
+        echo "updating $CORNDOG_DIR -> origin/$branch"
+        git -C "$CORNDOG_DIR" fetch origin
+        if [ "$force" = "1" ]; then
+            git -C "$CORNDOG_DIR" checkout -B "$branch" "origin/$branch"
+            git -C "$CORNDOG_DIR" reset --hard "origin/$branch"
+            # remove stray untracked files too — sandbox/, venv/, lcd/ and
+            # everything in ~/.config/corndog are ignored and survive
+            git -C "$CORNDOG_DIR" clean -fd
+        else
+            git -C "$CORNDOG_DIR" checkout "$branch"
+            git -C "$CORNDOG_DIR" pull --ff-only origin "$branch" || {
+                echo "${RED}local edits to official files block the update — re-run"
+                echo "with --force to reset them (your calibration and sandbox/"
+                echo "folder are never touched)${RST}"
+                exit 1
+            }
+        fi
+        # remember the branch + refresh deps, lcd, and the launcher itself
+        sed -i "s/^CORNDOG_BRANCH=.*/CORNDOG_BRANCH=$branch/" "$ENV_FILE" 2>/dev/null || true
+        if [ -d "$CORNDOG_DIR/lcd_custom" ]; then
+            rm -rf "$CORNDOG_DIR/lcd" && cp -r "$CORNDOG_DIR/lcd_custom" "$CORNDOG_DIR/lcd"
+            [ -d "$CORNDOG_DIR/drivers" ] || cp -r "$CORNDOG_DIR/lcd_custom/drivers" "$CORNDOG_DIR/drivers" 2>/dev/null || true
+        fi
+        [ -f "$CORNDOG_DIR/requirements.txt" ] && \
+            "$CORNDOG_VENV/bin/pip" install --quiet -r "$CORNDOG_DIR/requirements.txt"
+        cp -f "$CORNDOG_DIR/installer/corndog" "$HOME/.local/bin/corndog" 2>/dev/null || true
+        sudo systemctl restart "$SERVICE" 2>/dev/null || true
+        echo "${GRN}updated to $(git -C "$CORNDOG_DIR" log -1 --format='%h %s')${RST}" ;;
+    uninstall)
+        echo "This removes the systemd service and the corndog command."
+        echo "The repo ($CORNDOG_DIR) and your calibration are NOT deleted."
+        read -rp "Continue? [y/N] " a
+        [ "$a" = "y" ] || exit 0
+        sudo systemctl disable --now "$SERVICE" 2>/dev/null || true
+        sudo rm -f "/etc/systemd/system/$SERVICE.service"
+        sudo systemctl daemon-reload
+        rm -f "$HOME/.local/bin/corndog"
+        echo "${GRN}uninstalled.${RST}" ;;
+    help|--help|-h|*)
+        usage ;;
+esac

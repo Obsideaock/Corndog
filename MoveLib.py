@@ -74,8 +74,12 @@ from spot_micro_kinematics.utilities.spot_micro_kinematics import (
 )
 
 import sys
-sys.path.insert(0, "/home/Corndog/")
+from pathlib import Path
+_REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(_REPO_ROOT))            # for `lcd` / `drivers`
+sys.path.insert(0, str(_REPO_ROOT / "tools"))  # for corndog_config
 from lcd import lcd_library as lcd  # type: ignore
+from corndog_config import load_calibration as _load_calibration  # noqa: E402
 
 
 # =============================================================================
@@ -130,11 +134,11 @@ OE_PIN = 22
 output_enable = OutputDevice(OE_PIN, active_high=False)
 
 servo_channels = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15]
-servo_home: Dict[int, float] = {
-	0: 39, 1: 231, 4: 222, 5: 50,
-	6: 128, 7: 130, 8: 133, 9: 135,
-	10: 78, 11: 204, 14: 235, 15: 33
-}
+# servo_home + IK mapping now live in ~/.config/corndog/calibration.json
+# (written by tools/calibrate.py). If no calibration exists yet, the loader
+# returns the original factory values, so behavior is unchanged.
+_CAL = _load_calibration()
+servo_home: Dict[int, float] = dict(_CAL["servo_home"])
 
 servos: Dict[int, servo.Servo] = {ch: servo.Servo(pca.channels[ch]) for ch in servo_channels}
 for ch in servos:
@@ -349,10 +353,8 @@ CHANNEL_MAP = {
 }
 
 # Right-leg-only MAPPING (left legs use mirrored deltas, not their own MAPPING)
-_MAPPING_RIGHT = {
-	1: {1: {'sign': -1, 'offset': 228}, 2: {'sign': -1, 'offset': 117}, 3: {'sign': -1, 'offset': 165}},
-	3: {1: {'sign': +1, 'offset': 35},  2: {'sign': -1, 'offset': 89},  3: {'sign': -1, 'offset': 161}},
-}
+# Loaded from the calibration file (factory values if uncalibrated).
+_MAPPING_RIGHT = _CAL["mapping_right"]
 
 # Mirror pairs: left_leg -> right_leg
 _MIRROR_PAIR = {0: 1, 2: 3}
